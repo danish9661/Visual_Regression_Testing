@@ -122,6 +122,41 @@ async function assertValidMaskSelectors(page, maskSelectors = []) {
 }
 
 /**
+ * Collects a bounded set of DOM tokens (class/id/data attributes) used to link a
+ * visual change to CSS/template changes in the branch-comparison report. This is
+ * best-effort: a failure never breaks capture.
+ *
+ * @param {import('playwright').Page} page
+ * @param {number} [max=4000]
+ * @returns {Promise<string[]>}
+ */
+export async function collectDomTokens(page, max = 4000) {
+  try {
+    return await page.evaluate((limit) => {
+      const tokens = new Set();
+      const elements = document.querySelectorAll('*');
+      for (let i = 0; i < elements.length && tokens.size < limit; i++) {
+        const el = elements[i];
+        const className = typeof el.className === 'string' ? el.className : el.className?.baseVal;
+        if (className) {
+          for (const part of String(className).split(/\s+/)) {
+            if (part && tokens.size < limit) tokens.add(`.${part}`);
+          }
+        }
+        if (el.id && tokens.size < limit) tokens.add(`#${el.id}`);
+        for (const attr of ['data-testid', 'data-test-id', 'data-vrt-source']) {
+          const value = el.getAttribute(attr);
+          if (value && tokens.size < limit) tokens.add(`[${attr}="${value}"]`);
+        }
+      }
+      return [...tokens];
+    }, max);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Captures screenshots for all configured routes and viewports.
  *
  * @param {object} config - Validated configuration object
@@ -131,6 +166,7 @@ async function assertValidMaskSelectors(page, maskSelectors = []) {
  * @param {Function} [options.onProgress] - Callback invoked after each screenshot
  * @param {number} [options.navigationTimeout=30000] - Max ms for the page's load event (failing this aborts the capture)
  * @param {number} [options.networkIdleTimeout=10000] - Max ms to additionally wait for network idle (best effort)
+ * @param {boolean} [options.collectDomTokens=false] - Also record DOM tokens per snapshot (for code correlation)
  * @returns {Promise<Array<object>>} Array of captured snapshot results
  */
 export async function captureScreenshots(config, options = {}) {
@@ -197,6 +233,8 @@ export async function captureScreenshots(config, options = {}) {
           // Brief pause to allow any synchronous style recalculation
           await page.waitForTimeout(200);
 
+          const tokens = options.collectDomTokens ? await collectDomTokens(page) : undefined;
+
           const filename = getSnapshotFilename(route, viewport.name);
           const filepath = path.join(targetDir, filename);
 
@@ -219,7 +257,8 @@ export async function captureScreenshots(config, options = {}) {
             filepath,
             filename,
             url: fullUrl,
-            networkIdle
+            networkIdle,
+            ...(tokens ? { tokens } : {})
           };
 
           results.push(snapshotResult);

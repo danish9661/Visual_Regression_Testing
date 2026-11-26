@@ -3,8 +3,8 @@
 import { Command } from 'commander';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execSync } from 'node:child_process';
-import { loadConfig, readConfiguredStorageDir } from './config.js';
+import { execSync, execFileSync } from 'node:child_process';
+import { loadConfig, readConfiguredStorageDir, validateBranchCompare } from './config.js';
 import { captureScreenshots, getSnapshotFilename, assertValidRunId } from './capture.js';
 import { compareSnapshot, sha256, DEFAULT_PIXELMATCH_THRESHOLD } from './compare.js';
 import { buildRunManifest, writeRunManifest, toSqliteTimestamp, getToolVersion, MANIFEST_FILENAME } from './manifest.js';
@@ -16,6 +16,10 @@ import { EXIT, STDOUT_TARGET, CliError, buildResult, writeResult, sanitizeMessag
 import { jsonTargetConflict, jsonTargetShapeProblem } from './jsonTarget.js';
 import { createLogger } from './logger.js';
 import { toDisplayPath } from './display.js';
+import { runBranchCapture, findRepoRoot } from './branchCapture.js';
+import { compareBranchSnapshots, buildBranchCompareResult, writeBranchCompareResult } from './branchCompare.js';
+import { gitChangedFiles, correlateChanges } from '../ci/codeCorrelation.js';
+import { generateBranchReportMarkdown, generateJUnit, writeBranchReport } from '../ci/branchReport.js';
 
 /**
  * The --json result still owed if the command ends in an error or a crash: set once
@@ -414,6 +418,174 @@ program
       log.error(`\n[ERROR] Test run failed: ${sanitizeMessage(String(err?.message ?? err))}\n`);
       if (run) run.durationMs = Date.now() - startTime;
       writePendingJson(err);
+      process.exit(EXIT.ERROR);
+    }
+  });
+
+program
+  .command('compare-branches')
+  .description('Render and compare a base branch (main) with the current branch, then report visual changes and likely code changes')
+  .option('-c, --config <path>', 'Path to visual.config.json')
+  .option('-r, --run-id <id>', 'Identifier for this comparison')
+  .option('--base-ref <ref>', 'Base git ref (default: branchCompare.baseRef or origin/main)')
+  .option('--base-strategy <strategy>', 'merge-base (default) or tip')
+  .option('--max-mismatch <percent>', 'Mismatch percentage above which a snapshot is a change')
+  .option('--on-regression <mode>', 'fail (exit 1 on changes) or warn (exit 0)')
+  .option('--json <file>', 'Write the machine-readable result (schema visual-branch-compare v1); "-" writes it to stdout')
+  .option('--no-report', 'Do not write the Markdown report or append to GITHUB_STEP_SUMMARY')
+  .action(async (options) => {
+    const log = createLogger({ stdoutReserved: options.json === STDOUT_TARGET });
+    const startTime = Date.now();
+    const jsonTarget = options.json;
+
+    try {
+      const shapeProblem = jsonTargetShapeProblem(jsonTarget);
+      if (shapeProblem) throw new CliError('INVALID_ARGUMENT', shapeProblem);
+
+      const config = loadConfig(options.config);
+      const bc = config.branchCompare || validateBranchCompare({});
+      const effectiveConfig = { ...config, branchCompare: bc };
+
+      const policy = options.onRegression || process.env.VRT_ON_REGRESSION || bc.onRegression;
+      if (policy !== 'fail' && policy !== 'warn') {
+        throw new CliError('INVALID_ARGUMENT', `--on-regression must be "fail" or "warn", got "${policy}"`);
+      }
+      const baseRef = options.baseRef || bc.baseRef;
+      if (!/^[A-Za-z0-9][A-Za-z0-9._\/-]*$/.test(baseRef)) {
+        throw new CliError('INVALID_ARGUMENT', `--base-ref is not a safe git ref: "${baseRef}"`);
+      }
+      const baseStrategy = options.baseStrategy || bc.baseStrategy;
+      if (baseStrategy !== 'merge-base' && baseStrategy !== 'tip') {
+        throw new CliError('INVALID_ARGUMENT', `--base-strategy must be "merge-base" or "tip", got "${baseStrategy}"`);
+      }
+
+      let maxMismatchPercent = bc.maxMismatchPercent ?? config.threshold * 100;
+      if (options.maxMismatch !== undefined) {
+        const parsed = Number(options.maxMismatch);
+        if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) {
+          throw new CliError('INVALID_ARGUMENT', `--max-mismatch must be a number between 0 and 100, got "${options.maxMismatch}"`);
+        }
+        maxMismatchPercent = parsed;
+      }
+
+      const runId = options.runId || `branch_${startTime}`;
+      assertValidRunId(runId);
+      const storageRoot = resolveStorageRoot(config.storageDir);
+      const runDir = path.join(storageRoot, 'runs', runId, 'branch-compare');
+      const diffDir = path.join(runDir, 'diffs');
+      const resultFile = jsonTarget || path.join(runDir, 'result.json');
+      const reportFile = path.join(runDir, 'report.md');
+      if (jsonTarget && jsonTarget !== STDOUT_TARGET) {
+        fs.rmSync(path.resolve(process.cwd(), jsonTarget), { force: true });
+      }
+
+      log.info('──────────────────────────────────────────────────────');
+      log.info('  Visual Regression Testing Tool: Branch Comparison');
+      log.info('──────────────────────────────────────────────────────');
+      log.info(`  Routes          : ${config.routes.join(', ')}`);
+      log.info(`  Viewports       : ${config.viewports.map((v) => v.name).join(', ')}`);
+      log.info(`  Threshold       : ${maxMismatchPercent}%`);
+      log.info(`  Run ID          : ${runId}`);
+      log.info('──────────────────────────────────────────────────────\n');
+
+      const repoRoot = findRepoRoot();
+      const captured = await runBranchCapture({
+        config: effectiveConfig,
+        outputDir: runDir,
+        repoRoot,
+        options: { baseRef, baseStrategy },
+        log: log.info
+      });
+
+      log.info('\n  Comparing the two renders...');
+      const comparisons = compareBranchSnapshots({
+        baseSnapshots: captured.baseSnapshots,
+        headSnapshots: captured.headSnapshots,
+        diffDir,
+        allowedThresholdRatio: maxMismatchPercent / 100
+      });
+
+      log.info('  Linking visual changes to code changes...');
+      let changedFiles = [];
+      try {
+        changedFiles = gitChangedFiles({ repoRoot, baseSha: captured.baseSha, headSha: captured.headSha });
+      } catch (err) {
+        log.warn(`  [WARN] Could not read the git diff: ${sanitizeMessage(String(err?.message ?? err))}`);
+      }
+      const { results, fileImpacts } = correlateChanges({
+        results: comparisons,
+        changedFiles,
+        routeSources: bc.routeSources,
+        ignorePaths: bc.ignorePaths
+      });
+
+      let diffText = '';
+      try {
+        diffText = execFileSync('git', ['diff', '--no-color', `${captured.baseSha}...${captured.headSha}`, '--'], {
+          cwd: repoRoot, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024
+        });
+      } catch { /* the report still works without the raw diff */ }
+
+      const changedCount = results.filter((r) => r.status === 'DIFF' || r.status === 'MISSING_BASE').length;
+      const exitCode = changedCount > 0 && policy === 'fail' ? EXIT.DIFF : EXIT.PASS;
+      const result = buildBranchCompareResult({
+        runId,
+        baseSha: captured.baseSha,
+        headSha: captured.headSha,
+        baseRef: captured.baseRef,
+        headRef: captured.headRef,
+        baseStrategy,
+        thresholdPercent: maxMismatchPercent,
+        onRegression: policy,
+        exitCode,
+        results,
+        runDir,
+        reportPath: options.report === false ? null : reportFile,
+        durationMs: Date.now() - startTime
+      });
+
+      if (options.report !== false) {
+        const markdown = generateBranchReportMarkdown({ result, maxRows: bc.report.maxRows, fileImpacts, diffText });
+        const { stepSummaryWritten } = writeBranchReport(markdown, { outputDir: runDir });
+        try {
+          fs.writeFileSync(path.join(runDir, 'junit.xml'), generateJUnit({ result }), 'utf8');
+        } catch (junitErr) {
+          log.warn(`  [WARN] Could not write junit.xml: ${junitErr.message}`);
+        }
+        if (stepSummaryWritten) log.info('  CI Step Summary  : Appended to GITHUB_STEP_SUMMARY');
+        log.info(`  Report           : ${toDisplayPath(reportFile)}`);
+      }
+
+      writeBranchCompareResult(result, resultFile);
+
+      log.info('\n──────────────────────────────────────────────────────');
+      log.info(`  Total Snapshots  : ${results.length}`);
+      log.info(`  Changed          : ${changedCount}`);
+      log.info(`  Execution Time   : ${((Date.now() - startTime) / 1000).toFixed(2)}s`);
+      if (resultFile !== STDOUT_TARGET) log.info(`  JSON Result      : ${toDisplayPath(resultFile)}`);
+      log.info('──────────────────────────────────────────────────────\n');
+      if (changedCount > 0 && policy === 'warn') {
+        log.info(`[SUCCESS] ${changedCount} visual change(s) found (warn-only policy).\n`);
+      } else if (changedCount === 0) {
+        log.info('[SUCCESS] No visual differences between the two branches.\n');
+      } else {
+        log.error(`[FAILURE] ${changedCount} visual change(s) between base and head.\n`);
+      }
+      process.exit(exitCode);
+    } catch (err) {
+      log.error(`\n[ERROR] Branch comparison failed: ${sanitizeMessage(String(err?.message ?? err))}\n`);
+      try {
+        const failed = buildBranchCompareResult({
+          error: err,
+          runId: options.runId || 'unknown',
+          baseRef: options.baseRef,
+          headRef: 'HEAD',
+          onRegression: options.onRegression || 'fail'
+        });
+        writeBranchCompareResult(failed, jsonTarget || 'branch-compare-error.json');
+      } catch (writeErr) {
+        log.error(`[ERROR] Could not write the result: ${sanitizeMessage(String(writeErr?.message ?? writeErr))}\n`);
+      }
       process.exit(EXIT.ERROR);
     }
   });

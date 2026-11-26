@@ -70,7 +70,9 @@ Visual Regression Testing Project/
 │   └── workflows/
 │       ├── visual-ci.yml          # GitHub Actions visual regression pipeline
 │       ├── action-selftest.yml    # Proves the action's failure paths on a real runner (diff artifact imports; error uploads nothing)
-│       └── pages.yml              # Builds the static demo and deploys it to GitHub Pages
+│       ├── pages.yml              # Builds the static demo and deploys it to GitHub Pages
+│       └── visual-branch-compare.yml # PR check: render main + PR, diff, comment and upload artifacts
+├── .gitlab-ci.yml                 # The same branch comparison for GitLab merge requests
 ├── docs/                          # Detailed engineering milestone records
 │   ├── PHASE_1_EXECUTION.md       # Foundation & Playwright Capture Engine
 │   ├── PHASE_2_EXECUTION.md       # Pixel Diffing & Dimension Normalizer
@@ -79,7 +81,9 @@ Visual Regression Testing Project/
 │   └── PHASE_5_EXECUTION.md       # GitHub Actions CI & Markdown Reporting
 ├── src/
 │   ├── cli/                       # CLI commands and screenshot engine
-│   │   ├── index.js               # CLI entry point (`visual-ci capture`, `visual-ci test`, `visual-ci import`)
+│   │   ├── index.js               # CLI entry point (`capture`, `test`, `import`, `compare-branches`)
+│   │   ├── branchCapture.js       # Worktrees for base/head, start both apps, capture with DOM tokens
+│   │   ├── branchCompare.js       # Base-vs-head diffing and the `visual-branch-compare` result
 │   │   ├── capture.js             # Playwright multi-viewport capture engine
 │   │   ├── compare.js             # Pixel comparison and canvas dimension normalizer
 │   │   ├── manifest.js            # Writes run.json, the per-run record that travels with CI artifacts
@@ -92,7 +96,10 @@ Visual Regression Testing Project/
 │   │   ├── config.js              # Config loader with comment-stripping parser
 │   │   └── reporter.js            # Markdown report generator & GITHUB_STEP_SUMMARY
 │   ├── ci/
-│   │   └── actionReport.js        # The action's result step: JSON result -> outputs, container -> runner paths, upload decision
+│   │   ├── actionReport.js        # The action's result step: JSON result -> outputs, container -> runner paths, upload decision
+│   │   ├── codeCorrelation.js     # git diff + selector/template heuristics -> likely code changes per visual change
+│   │   ├── branchReport.js        # PR/MR Markdown report, sticky marker and JUnit XML
+│   │   └── postComment.js         # Upserts the sticky PR (GitHub) or MR (GitLab) comment
 │   └── server/                    # Web review dashboard & REST API
 │       ├── app.js                 # Express server configuration
 │       ├── db.js                  # SQLite schema and queries
@@ -175,7 +182,12 @@ Visual Regression Testing Project/
     ├── verify-phase-2.js          # Phase 2 deliverable verification script
     ├── verify-phase-3.js          # Phase 3 deliverable verification script
     ├── verify-phase-4.js          # Phase 4 deliverable verification script
-    └── verify-phase-5.js          # Phase 5 deliverable verification script
+    ├── verify-phase-5.js          # Phase 5 deliverable verification script
+    ├── branch-compare.test.js     # Config, diffing, correlation, report and end-to-end two-branch run
+    ├── branch-ci.test.js          # Sticky comment posting + GitHub/GitLab workflow wiring
+    ├── branch-comment-http.test.js# Comment posting against a real local HTTP API
+    ├── simulate-pr.js             # Standalone full PR simulation (temp repo + fake APIs)
+    └── verify-phase-6.js          # Phase 6 deliverable verification script
 ```
 
 ---
@@ -672,6 +684,59 @@ The failure paths are proven on a real runner by `.github/workflows/action-selft
 
 ---
 
+## 🔀 Compare a PR/MR branch with main (visuals + code changes)
+
+The regular `test` command compares a branch against the committed baselines. The new `compare-branches` command answers a different question: **what looks different between main and this PR, and which code change probably caused it?**
+
+It materializes both commits in temporary git worktrees, starts each branch's app on its own port with the same browser image, captures all configured routes/viewports, diffs the two renders, and reports likely source files/hunks next to each visual change. It never writes to `storage/baselines/`.
+
+```bash
+# Start the demo site yourself or configure branchCompare.startCommand, then:
+node src/cli/index.js compare-branches --json result.json
+```
+
+Add a `branchCompare` block to `visual.config.json` (all fields optional):
+
+```json
+"branchCompare": {
+  "baseRef": "origin/main",
+  "baseStrategy": "merge-base",
+  "installCommand": "",
+  "startCommand": "npm run demo:serve",
+  "waitOnPath": "/",
+  "portBase": 4100,
+  "portHead": 4101,
+  "startTimeoutMs": 60000,
+  "routeSources": { "/": ["scripts/demo-app.js"] },
+  "ignorePaths": ["**/*.md", "**/tests/**"],
+  "onRegression": "fail",
+  "report": { "comment": true, "maxRows": 25 }
+}
+```
+
+| Field | Meaning |
+| :--- | :--- |
+| `baseRef` | Git ref to compare against (default `origin/main`). |
+| `baseStrategy` | `merge-base` (default) compares against where the branch forked; `tip` compares against the base ref's current tip. |
+| `installCommand` | Install step per worktree. `""` skips it and reuses the checkout's `node_modules` (what CI does). |
+| `startCommand` | Command that serves the app; it receives `PORT`, `DEMO_PORT` and `HOST=127.0.0.1`. |
+| `portBase` / `portHead` | Distinct ports for the two renders. |
+| `waitOnPath` | Path polled until the app answers (default `/`). |
+| `routeSources` | Optional route → file globs; these files are always considered likely sources for that route. |
+| `ignorePaths` | Globs never reported as suspects. |
+| `maxMismatchPercent` | Overrides `threshold` for this check (percent). |
+| `onRegression` | `fail` (exit 1 on changes) or `warn` (exit 0, report still written). Overridable with `--on-regression` or `VRT_ON_REGRESSION`. |
+| `report.comment` | Whether the CI step should post the sticky PR/MR comment. |
+
+Exit codes follow the rest of the tool: **0** no visual changes (or warn mode), **1** visual changes, **2** git/capture/config error. `--json <file>` (or `--json -`) writes a `visual-branch-compare` v1 result with base/head SHAs, per-snapshot mismatch percentages and ranked suspects. The run folder holds `base/`, `head/`, `diffs/`, `report.md` and `junit.xml`.
+
+**How code correlation works (and its limits):** the tool reads `git diff base...head`, extracts CSS selectors, ids and `data-*` tokens from changed lines, and compares them with DOM tokens collected from each page during capture. It also uses `routeSources` globs and path/route name matches. Every suspect is labelled with a reason and a confidence (`high`/`medium`/`low`) — these are **heuristic hints, not proof of cause**. When nothing matches, the report says so instead of guessing.
+
+**CI setup:**
+
+- **GitHub Actions:** `.github/workflows/visual-branch-compare.yml` runs on PRs to `main`. It checks out with full history, builds the pinned Docker image, runs `compare-branches` inside it (so both branches render with identical fonts), uploads the artifacts, and posts/updates one sticky PR comment. `pull-requests: write` is used only for the comment; for fork PRs the token is read-only, so the comment step is skipped and the job summary/artifacts remain. Use `on_regression: warn` from a manual run to trial it.
+- **GitLab CI:** `.gitlab-ci.yml` defines `visual-branch-compare` for `merge_request_event`, using `CI_MERGE_REQUEST_DIFF_BASE_SHA` as the base, the same pinned Playwright image, JUnit artifacts and a sticky MR note. Set a masked `GL_TOKEN` (project access token with `api` scope) to enable the note; without it the artifacts still work.
+
 ## 🚀 GitHub Actions CI Pipeline
 
 The project includes pre-configured automation for GitHub Actions (`.github/workflows/visual-ci.yml`):
@@ -698,7 +763,7 @@ The project includes pre-configured automation for GitHub Actions (`.github/work
 The project includes unit, integration, and deliverable verification suites:
 
 ```bash
-# Run all 746 Vitest unit, integration & browser tests
+# Run all 769 Vitest unit, integration & browser tests
 npm test
 
 # Run Phase 1 Deliverable Verification (Capture & Masking)
@@ -715,6 +780,12 @@ node tests/verify-phase-4.js
 
 # Run Phase 5 Deliverable Verification (GitHub Actions CI & Markdown Reports)
 node tests/verify-phase-5.js
+
+# Run Phase 6 Deliverable Verification (PR/MR branch visual comparison)
+node tests/verify-phase-6.js
+
+# Simulate a whole PR locally: temp git repo, real browser diff, fake comment API
+node tests/simulate-pr.js
 ```
 
 ### Verification Results
@@ -751,9 +822,12 @@ node tests/verify-phase-5.js
  ✓ tests/reporter.test.js (12 tests)
  ✓ tests/a11y-axe.test.js (14 tests)
  ✓ tests/keyboard-ui.test.js (20 tests)
+ ✓ tests/branch-compare.test.js (13 tests)
+ ✓ tests/branch-ci.test.js (8 tests)
+ ✓ tests/branch-comment-http.test.js (2 tests)
 
- Test Files  32 passed (32)
-      Tests  746 passed (746)
+ Test Files  35 passed (35)
+      Tests  769 passed (769)
 ```
 
 ---

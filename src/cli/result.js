@@ -48,6 +48,8 @@ export const ERROR_CODES = Object.freeze([
   'NAVIGATION_FAILED',
   'BROWSER_MISSING',
   'INVALID_ARGUMENT',
+  'GIT_FAILED',
+  'APP_START_FAILED',
   'INTERNAL'
 ]);
 

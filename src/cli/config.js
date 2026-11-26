@@ -127,13 +127,149 @@ export function validateConfig(config) {// when we use the export function that 
   // 6. Optional storageDir
   const storageDir = validateStorageDir(config.storageDir);
 
+  // 7. Optional base-vs-head (PR/MR) comparison settings
+  const branchCompare = validateBranchCompare(config.branchCompare);
+
   return {
     baseUrl: normalizedBaseUrl,
     routes: normalizedRoutes,
     viewports: normalizedViewports,
     maskSelectors: normalizedMaskSelectors,
     threshold: normalizedThreshold,
-    storageDir
+    storageDir,
+    branchCompare
+  };
+}
+
+/**
+ * Validates the optional `branchCompare` block used by `visual-ci compare-branches`.
+ * The block is optional: without it the command uses the defaults below (it still
+ * needs a `startCommand` that can serve the app on the chosen ports).
+ *
+ * @param {unknown} value
+ * @returns {object|null}
+ */
+export function validateBranchCompare(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Invalid configuration: "branchCompare" must be an object.');
+  }
+
+  const stringValue = (v, name, fallback) => {
+    if (v === undefined || v === null) return fallback;
+    if (typeof v !== 'string' || v.trim() === '') {
+      throw new Error(`Invalid configuration: "branchCompare.${name}" must be a non-empty string.`);
+    }
+    return v.trim();
+  };
+  const stringArray = (v, name, fallback) => {
+    if (v === undefined || v === null) return fallback;
+    if (!Array.isArray(v)) {
+      throw new Error(`Invalid configuration: "branchCompare.${name}" must be an array of strings.`);
+    }
+    return v.map((entry, i) => {
+      if (typeof entry !== 'string' || entry.trim() === '') {
+        throw new Error(`Invalid configuration: "branchCompare.${name}[${i}]" must be a non-empty string.`);
+      }
+      return entry.trim();
+    });
+  };
+  const intValue = (v, name, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) => {
+    if (v === undefined || v === null) return fallback;
+    if (!Number.isInteger(v) || v < min || v > max) {
+      throw new Error(`Invalid configuration: "branchCompare.${name}" must be an integer between ${min} and ${max}.`);
+    }
+    return v;
+  };
+
+  // A git ref must not start with "-" (it would be parsed as a git option) and must
+  // not contain whitespace or control characters.
+  const baseRef = stringValue(value.baseRef, 'baseRef', 'origin/main');
+  if (!/^[A-Za-z0-9][A-Za-z0-9._\/-]*$/.test(baseRef)) {
+    throw new Error(`Invalid configuration: "branchCompare.baseRef" is not a safe git ref: "${baseRef}".`);
+  }
+
+  const baseStrategy = value.baseStrategy === undefined || value.baseStrategy === null
+    ? 'merge-base'
+    : value.baseStrategy;
+  if (baseStrategy !== 'merge-base' && baseStrategy !== 'tip') {
+    throw new Error('Invalid configuration: "branchCompare.baseStrategy" must be "merge-base" or "tip".');
+  }
+
+  const installCommand = value.installCommand === undefined || value.installCommand === null
+    ? 'npm ci'
+    : value.installCommand;
+  if (typeof installCommand !== 'string') {
+    throw new Error('Invalid configuration: "branchCompare.installCommand" must be a string (use "" to skip installing).');
+  }
+  const startCommand = stringValue(value.startCommand, 'startCommand', 'npm start');
+  const waitOnPath = stringValue(value.waitOnPath, 'waitOnPath', '/');
+  if (!waitOnPath.startsWith('/')) {
+    throw new Error('Invalid configuration: "branchCompare.waitOnPath" must start with "/".');
+  }
+
+  const portBase = intValue(value.portBase, 'portBase', 4100, { min: 1, max: 65535 });
+  const portHead = intValue(value.portHead, 'portHead', 4101, { min: 1, max: 65535 });
+  if (portBase === portHead) {
+    throw new Error('Invalid configuration: "branchCompare.portBase" and "portHead" must be different.');
+  }
+
+  const startTimeoutMs = intValue(value.startTimeoutMs, 'startTimeoutMs', 60000);
+
+  const routeSources = value.routeSources === undefined || value.routeSources === null ? {} : value.routeSources;
+  if (typeof routeSources !== 'object' || Array.isArray(routeSources)) {
+    throw new Error('Invalid configuration: "branchCompare.routeSources" must be an object.');
+  }
+  const normalizedRouteSources = {};
+  for (const [route, patterns] of Object.entries(routeSources)) {
+    if (typeof route !== 'string' || route.trim() === '') {
+      throw new Error('Invalid configuration: "branchCompare.routeSources" keys must be non-empty route strings.');
+    }
+    normalizedRouteSources[route.trim().startsWith('/') ? route.trim() : `/${route.trim()}`] =
+      stringArray(patterns, `routeSources.${route}`, []);
+  }
+
+  let maxMismatchPercent = null;
+  if (value.maxMismatchPercent !== undefined && value.maxMismatchPercent !== null) {
+    if (typeof value.maxMismatchPercent !== 'number' || Number.isNaN(value.maxMismatchPercent) ||
+        value.maxMismatchPercent < 0 || value.maxMismatchPercent > 100) {
+      throw new Error('Invalid configuration: "branchCompare.maxMismatchPercent" must be a number between 0 and 100.');
+    }
+    maxMismatchPercent = value.maxMismatchPercent;
+  }
+
+  const onRegression = value.onRegression === undefined || value.onRegression === null
+    ? 'fail' : value.onRegression;
+  if (onRegression !== 'fail' && onRegression !== 'warn') {
+    throw new Error('Invalid configuration: "branchCompare.onRegression" must be "fail" or "warn".');
+  }
+
+  const report = value.report === undefined || value.report === null ? {} : value.report;
+  if (typeof report !== 'object' || Array.isArray(report)) {
+    throw new Error('Invalid configuration: "branchCompare.report" must be an object.');
+  }
+  if (report.comment !== undefined && typeof report.comment !== 'boolean') {
+    throw new Error('Invalid configuration: "branchCompare.report.comment" must be a boolean.');
+  }
+
+  return {
+    baseRef,
+    baseStrategy,
+    installCommand,
+    startCommand,
+    waitOnPath,
+    portBase,
+    portHead,
+    startTimeoutMs,
+    routeSources: normalizedRouteSources,
+    ignorePaths: stringArray(value.ignorePaths, 'ignorePaths', []),
+    ignoreRoutes: stringArray(value.ignoreRoutes, 'ignoreRoutes', []),
+    maxMismatchPercent,
+    onRegression,
+    report: {
+      comment: report.comment !== false,
+      maxRows: intValue(report.maxRows, 'report.maxRows', 25)
+    }
   };
 }
 

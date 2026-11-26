@@ -1,0 +1,93 @@
+name: Visual branch comparison (PR)
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      on_regression:
+        description: 'fail the job on visual changes, or only warn'
+        required: false
+        default: 'fail'
+        type: choice
+        options: [fail, warn]
+
+permissions:
+  contents: read
+  pull-requests: write
+  actions: read
+
+concurrency:
+  group: visual-branch-compare-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  compare:
+    name: Render main and this PR, then diff
+    runs-on: ubuntu-latest
+    env:
+      RUN_ID: gh-${{ github.event.pull_request.number || github.run_id }}-${{ github.run_attempt }}
+      TEMP_DIR: ${{ runner.temp }}/visual-branch
+      ON_REGRESSION: ${{ inputs.on_regression || 'fail' }}
+    steps:
+      - name: Checkout with full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build the pinned rendering image
+        run: docker build -t visual-ci-action:local .
+
+      - name: Compare base and head renders
+        id: compare
+        continue-on-error: true
+        run: |
+          mkdir -p "$TEMP_DIR"
+          docker run --rm --network host --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp -e CI=true -e VRT_ON_REGRESSION="$ON_REGRESSION" \
+            -v "$GITHUB_WORKSPACE:/github/workspace" -w /github/workspace \
+            -v "$TEMP_DIR:/visual-branch-temp" \
+            visual-ci-action:local \
+            node src/cli/index.js compare-branches \
+              -c visual.config.json \
+              -r "$RUN_ID" \
+              --base-ref "${{ github.event.pull_request.base.sha || 'origin/main' }}" \
+              --on-regression "$ON_REGRESSION" \
+              --json /visual-branch-temp/result.json
+
+      - name: Upload the comparison artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-branch-compare-${{ env.RUN_ID }}
+          path: |
+            ${{ runner.temp }}/visual-branch/result.json
+            storage/runs/${{ env.RUN_ID }}/branch-compare/**
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Post or update the PR comment
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        env:
+          VRT_PLATFORM: github
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: node src/ci/postComment.js "$TEMP_DIR/result.json"
+
+      - name: Fail the job when the comparison failed
+        if: steps.compare.outcome == 'failure'
+        run: |
+          echo "::error::Visual branch comparison failed; see the PR comment and artifact."
+          exit 1
