@@ -97,6 +97,23 @@ export function generateBranchReportMarkdown({ result, maxRows = 25, fileImpacts
     }
   }
 
+  const withAttributes = changed.filter((snapshot) => snapshot.attribute_changes?.length);
+  if (withAttributes.length) {
+    lines.push('', '### DOM / style attribute differences', '');
+    lines.push('| Element | Attribute | Base | Head | Likely code |', '| :--- | :--- | :--- | :--- | :--- |');
+    for (const snapshot of withAttributes.slice(0, Math.min(6, maxRows))) {
+      const top = snapshot.suspects?.[0];
+      const where = top ? `${escapeCell(top.path)}${top.line ? `:${top.line}` : ''}` : '_unknown_';
+      for (const change of snapshot.attribute_changes.slice(0, 20)) {
+        lines.push(
+          `| \`${escapeCell(change.path)}\` | ${escapeCell(change.attribute)} | ` +
+          `${escapeCell(change.before) || '_(empty)_'} | ${escapeCell(change.after) || '_(empty)_'} | ${where} |`
+        );
+      }
+    }
+    lines.push('', '_Element paths are stable `tag:nth-of-type()` chains, so the same element can be compared across branches._');
+  }
+
   if (fileImpacts.length) {
     lines.push('', '### Changed files that may explain a visual change', '');
     for (const file of fileImpacts.slice(0, 20)) {

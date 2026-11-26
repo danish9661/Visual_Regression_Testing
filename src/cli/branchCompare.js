@@ -5,6 +5,7 @@ import { getSnapshotFilename } from './naming.js';
 import { getToolVersion } from './manifest.js';
 import { toDisplayPath } from './display.js';
 import { writeResult, classifyError, sanitizeMessage, toError } from './result.js';
+import { diffDomProfiles } from './domProfile.js';
 
 /**
  * Diffs the two renders of a branch comparison. The base screenshot is the
@@ -60,7 +61,9 @@ export function compareBranchSnapshots({
       dimensions: null,
       thresholdPercent,
       noiseFiltered: false,
-      repeatMismatchPercentage: null
+      repeatMismatchPercentage: null,
+      attributeChanges: base?.domProfile && head.domProfile
+        ? diffDomProfiles(base.domProfile, head.domProfile) : []
     };
 
     // A route added in the PR has no base render: report it explicitly, do not
@@ -143,7 +146,8 @@ export function buildBranchCompareResult({
     base: toDisplayPath(r.basePath),
     head: toDisplayPath(r.headPath),
     diff: toDisplayPath(r.diffPath),
-    suspects: r.suspects || []
+    suspects: r.suspects || [],
+    attribute_changes: r.attributeChanges || []
   }));
   const changed = snapshots.filter((s) => s.status === 'DIFF' || s.status === 'MISSING_BASE').length;
   const err = error ? toError(error) : null;

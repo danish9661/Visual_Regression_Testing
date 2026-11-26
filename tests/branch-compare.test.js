@@ -407,6 +407,7 @@ describe('visual-ci compare-branches (end to end)', () => {
     expect(result.snapshots[0].mismatch_percentage).toBeGreaterThan(0);
     expect(result.snapshots[0].suspects[0].path).toBe('styles.css');
     expect(result.snapshots[0].suspects[0].evidence).toContain('.hero');
+    expect(result.snapshots[0].attribute_changes.some((c) => c.attribute === 'style.color')).toBe(true);
 
     const runDir = path.join(dir, 'storage', 'runs', 'branch_e2e', 'branch-compare');
     expect(fs.existsSync(path.join(runDir, 'diffs', 'index-desktop-diff.png'))).toBe(true);
@@ -414,6 +415,7 @@ describe('visual-ci compare-branches (end to end)', () => {
     expect(fs.existsSync(path.join(runDir, 'junit.xml'))).toBe(true);
     expect(fs.existsSync(path.join(runDir, 'base', 'index-desktop.png'))).toBe(true);
     expect(fs.existsSync(path.join(runDir, 'head', 'index-desktop.png'))).toBe(true);
+    expect(fs.readFileSync(path.join(runDir, 'report.md'), 'utf8')).toContain('DOM / style attribute differences');
   }, 120000);
 
   it('warn-only policy still reports the change but exits 0', () => {

@@ -8,6 +8,7 @@ import { getSnapshotFilename } from './naming.js';
 import { CliError } from './errors.js';
 import { redactUrl, redactUrlsInText } from './display.js';
 import { sanitizeMessage } from './result.js';
+import { captureDomProfile, domProfileTokens } from './domProfile.js';
 
 const firstLine = (err) => String(err?.message ?? err).split('\n')[0];
 
@@ -201,6 +202,7 @@ export async function collectDomTokens(page, max = 6000) {
  * @param {string} [options.waitForSelector] - Wait for this element (visible) before capturing
  * @param {boolean} [options.scrollToBottom=false] - Scroll through the page first to trigger lazy loading
  * @param {boolean} [options.collectDomTokens=false] - Also record DOM tokens per snapshot (for code correlation)
+ * @param {boolean} [options.collectDomProfile=false] - Also record a structured DOM/style profile per snapshot
  * @returns {Promise<Array<object>>} Array of captured snapshot results
  */
 export async function captureScreenshots(config, options = {}) {
@@ -294,6 +296,10 @@ export async function captureScreenshots(config, options = {}) {
           await page.waitForTimeout(settleMs);
 
           const tokens = options.collectDomTokens ? await collectDomTokens(page) : undefined;
+          const profile = options.collectDomProfile ? await captureDomProfile(page) : null;
+          const mergedTokens = (tokens || profile)
+            ? [...new Set([...(tokens || []), ...(profile ? domProfileTokens(profile) : [])])]
+            : undefined;
 
           const filename = getSnapshotFilename(route, viewport.name);
           const filepath = path.join(targetDir, filename);
@@ -318,7 +324,8 @@ export async function captureScreenshots(config, options = {}) {
             filename,
             url: fullUrl,
             networkIdle,
-            ...(tokens ? { tokens } : {})
+            ...(mergedTokens ? { tokens: mergedTokens } : {}),
+            ...(profile ? { domProfile: profile } : {})
           };
 
           results.push(snapshotResult);

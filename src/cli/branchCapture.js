@@ -247,6 +247,7 @@ export async function runBranchCapture({ config, outputDir, repoRoot, options = 
         runId,
         outputDir,
         collectDomTokens: true,
+        collectDomProfile: true,
         settleMs: opts.settleMs,
         waitForSelector: opts.waitForSelector || undefined,
         scrollToBottom: opts.scrollToBottom,

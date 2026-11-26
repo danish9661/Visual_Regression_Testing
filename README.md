@@ -85,6 +85,7 @@ Visual Regression Testing Project/
 │   │   ├── index.js               # CLI entry point (`capture`, `test`, `import`, `compare-branches`)
 │   │   ├── branchCapture.js       # Worktrees for base/head, start both apps, capture with DOM tokens
 │   │   ├── branchCompare.js       # Base-vs-head diffing and the `visual-branch-compare` result
+│   │   └── domProfile.js          # Playwright DOM/style profile + structural attribute diff
 │   │   ├── capture.js             # Playwright multi-viewport capture engine
 │   │   ├── compare.js             # Pixel comparison and canvas dimension normalizer
 │   │   ├── manifest.js            # Writes run.json, the per-run record that travels with CI artifacts
@@ -188,6 +189,7 @@ Visual Regression Testing Project/
     ├── branch-ci.test.js          # Sticky comment posting + GitHub/GitLab workflow wiring
     ├── branch-comment-http.test.js# Comment posting against a real local HTTP API
     ├── capture-hooks.test.js      # waitForSelector / scrollToBottom for SPA pages
+    ├── dom-profile.test.js        # Playwright DOM/style attribute diff between two renders
     ├── simulate-pr.js             # Standalone full PR simulation (temp repo + fake APIs)
     └── verify-phase-6.js          # Phase 6 deliverable verification script
 ```
@@ -760,6 +762,8 @@ Exit codes follow the rest of the tool: **0** no visual changes (or warn mode), 
 
 **How code correlation works (and its limits):** the tool reads `git diff base...head` and extracts signals from **all** changed file types — CSS selectors, custom properties, `@keyframes` and computed colour/value pairs; HTML/template classes, ids, `data-*` attributes and visible text; JS/TS state-machine actions, string literals, identifiers, imported modules and user-visible strings; JSON/YAML config keys and values; and asset file names. Those are matched against DOM tokens captured from each page: classes, ids, `data-*` and ARIA state, visible text, computed styles and CSS custom properties. `routeSources` globs, path/route matches and the module import graph add further evidence. Every suspect carries a reason, confidence (`high`/`medium`/`low`) and the **actual +/- diff hunks**, and the report also includes the full collapsed git diff. These are **heuristic hints, not proof of cause** — when nothing matches, the report says so instead of guessing.
 
+**Attribute-level diff:** each branch is also profiled with Playwright (`src/cli/domProfile.js`). It records a stable `tag:nth-of-type()` path for each element plus its class, id, `data-*`/ARIA state, visible text, computed styles and box geometry. The two profiles are diffed structurally, so the report can say exactly *which attribute* changed (e.g. `style.color` `rgb(10,10,10) → rgb(220,20,20)`, `data.state` `ok → failed`, `class` `hero → hero error`) and pair it with the likely code. This is captured alongside the screenshot, so it uses the same deterministic rendering.
+
 **CI setup:**
 
 - **GitHub Actions:** `.github/workflows/visual-branch-compare.yml` runs on PRs to `main`. It checks out with full history, builds the pinned Docker image, runs `compare-branches` inside it (so both branches render with identical fonts), uploads the artifacts, and posts/updates one sticky PR comment. `pull-requests: write` is used only for the comment; for fork PRs the token is read-only, so the comment step is skipped and the job summary/artifacts remain. Use `on_regression: warn` from a manual run to trial it.
@@ -791,7 +795,7 @@ The project includes pre-configured automation for GitHub Actions (`.github/work
 The project includes unit, integration, and deliverable verification suites:
 
 ```bash
-# Run all 784 Vitest unit, integration & browser tests
+# Run all 786 Vitest unit, integration & browser tests
 npm test
 
 # Run Phase 1 Deliverable Verification (Capture & Masking)
@@ -854,9 +858,10 @@ node tests/simulate-pr.js
  ✓ tests/branch-ci.test.js (9 tests)
  ✓ tests/branch-comment-http.test.js (2 tests)
  ✓ tests/capture-hooks.test.js (2 tests)
+ ✓ tests/dom-profile.test.js (2 tests)
 
- Test Files  36 passed (36)
-      Tests  784 passed (784)
+ Test Files  37 passed (37)
+      Tests  786 passed (786)
 ```
 
 ---
