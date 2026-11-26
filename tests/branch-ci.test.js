@@ -90,6 +90,8 @@ describe('CI workflow wiring', () => {
     expect(triggers.pull_request.types).toContain('synchronize');
     expect(workflow.permissions['pull-requests']).toBe('write');
     expect(workflow.permissions.contents).toBe('read');
+    // `inputs.*` is only valid on workflow_dispatch; this workflow also runs on push.
+    expect(ghText).not.toMatch(/\$\{\{\s*inputs\./);
   });
 
   it('GitHub workflow builds the image, runs the comparison and posts a comment', () => {

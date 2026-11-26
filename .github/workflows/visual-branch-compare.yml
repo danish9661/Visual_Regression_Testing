@@ -29,7 +29,7 @@ jobs:
     env:
       RUN_ID: gh-${{ github.event.pull_request.number || github.run_id }}-${{ github.run_attempt }}
       TEMP_DIR: ${{ runner.temp }}/visual-branch
-      ON_REGRESSION: ${{ inputs.on_regression || 'fail' }}
+      ON_REGRESSION: ${{ github.event.inputs.on_regression || 'fail' }}
     steps:
       - name: Checkout with full history
         uses: actions/checkout@v4
