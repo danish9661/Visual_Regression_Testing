@@ -67,6 +67,7 @@ jobs:
               --json /visual-branch-temp/result.json
 
       - name: Upload the comparison artifacts
+        id: upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -84,6 +85,7 @@ jobs:
           VRT_PLATFORM: github
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
+          VRT_ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
         run: node src/ci/postComment.js "$TEMP_DIR/result.json"
 
       - name: Fail the job when the comparison failed

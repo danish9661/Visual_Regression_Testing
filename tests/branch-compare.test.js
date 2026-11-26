@@ -8,12 +8,15 @@ import { PNG } from 'pngjs';
 
 import { validateBranchCompare, validateConfig } from '../src/cli/config.js';
 import { compareBranchSnapshots, buildBranchCompareResult } from '../src/cli/branchCompare.js';
-import { globToRegExp, matchesAnyGlob, extractSignals, correlateChanges } from '../src/ci/codeCorrelation.js';
+import {
+  globToRegExp, matchesAnyGlob, extractSignals, correlateChanges, hasRenderRelevantChanges
+} from '../src/ci/codeCorrelation.js';
 import {
   generateBranchReportMarkdown, generateJUnit, writeBranchReport, BRANCH_MARKER
 } from '../src/ci/branchReport.js';
 
 const CLI = path.resolve('src/cli/index.js');
+const ORIGINAL_CSS = '.hero { color: rgb(10, 10, 10); }\n';
 
 function git(dir, args) {
   return execFileSync('git', args, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -54,6 +57,21 @@ describe('branchCompare configuration', () => {
     });
     expect(bc.report.comment).toBe(true);
     expect(bc.report.maxRows).toBe(25);
+    expect(bc.stabilityCheck).toBe(false);
+    expect(bc.skipWhenNoRenderChanges).toBe(false);
+    expect(bc.routeThresholds).toEqual({});
+  });
+
+  it('validates the new improvement settings', () => {
+    const bc = validateBranchCompare({
+      stabilityCheck: true, skipWhenNoRenderChanges: true,
+      routeThresholds: { '/pricing': 2, about: 0.5 }
+    });
+    expect(bc.stabilityCheck).toBe(true);
+    expect(bc.skipWhenNoRenderChanges).toBe(true);
+    expect(bc.routeThresholds).toEqual({ '/pricing': 2, '/about': 0.5 });
+    expect(() => validateBranchCompare({ routeThresholds: { '/': 101 } })).toThrow(/between 0 and 100/);
+    expect(() => validateBranchCompare({ stabilityCheck: 'yes' })).toThrow(/boolean/);
   });
 
   it('is included in a validated config and rejects unsafe values', () => {
@@ -125,6 +143,58 @@ describe('branch snapshot diffing', () => {
     expect(result.counts).toEqual({ total: 1, matched: 0, changed: 1 });
     expect(result.snapshots[0].suspects).toEqual([]);
     expect(result.snapshots[0].base).not.toMatch(/^\//);
+  });
+
+  it('honours per-route thresholds', () => {
+    const baseDir = path.join(dir, 'tbase');
+    const headDir = path.join(dir, 'thead');
+    fs.mkdirSync(baseDir); fs.mkdirSync(headDir);
+    solidPng(path.join(baseDir, 'a.png'), 10, 10, 10);
+    solidPng(path.join(headDir, 'a.png'), 200, 10, 10);
+    const base = [{ route: '/', viewport: 'desktop', filepath: path.join(baseDir, 'a.png') }];
+    const head = [{ route: '/', viewport: 'desktop', filepath: path.join(headDir, 'a.png') }];
+    const strict = compareBranchSnapshots({ baseSnapshots: base, headSnapshots: head, diffDir: path.join(dir, 'd1'), allowedThresholdRatio: 0.001 });
+    const loose = compareBranchSnapshots({
+      baseSnapshots: base, headSnapshots: head, diffDir: path.join(dir, 'd2'),
+      allowedThresholdRatio: 0.001, routeThresholds: { '/': 100 }
+    });
+    expect(strict[0].status).toBe('DIFF');
+    expect(loose[0].status).toBe('MATCH');
+    expect(loose[0].thresholdPercent).toBe(100);
+  });
+
+  it('filters a difference that does not repeat in the stability capture', () => {
+    const baseDir = path.join(dir, 'sbase');
+    const headDir = path.join(dir, 'shead');
+    const repeatDir = path.join(dir, 'srepeat');
+    fs.mkdirSync(baseDir); fs.mkdirSync(headDir); fs.mkdirSync(repeatDir);
+    solidPng(path.join(baseDir, 'a.png'), 10, 10, 10);
+    solidPng(path.join(headDir, 'a.png'), 250, 10, 10);
+    // The second render of each branch is identical, so the change was noise.
+    solidPng(path.join(repeatDir, 'base.png'), 10, 10, 10);
+    solidPng(path.join(repeatDir, 'head.png'), 10, 10, 10);
+    const snap = (route, viewport, filepath) => ({ route, viewport, filepath, tokens: [] });
+    const results = compareBranchSnapshots({
+      baseSnapshots: [snap('/', 'desktop', path.join(baseDir, 'a.png'))],
+      headSnapshots: [snap('/', 'desktop', path.join(headDir, 'a.png'))],
+      repeatBaseSnapshots: [snap('/', 'desktop', path.join(repeatDir, 'base.png'))],
+      repeatHeadSnapshots: [snap('/', 'desktop', path.join(repeatDir, 'head.png'))],
+      diffDir: path.join(dir, 'sdiff'),
+      allowedThresholdRatio: 0.001
+    });
+    expect(results[0].status).toBe('MATCH');
+    expect(results[0].noiseFiltered).toBe(true);
+    expect(results[0].repeatMismatchPercentage).toBe(0);
+  });
+});
+
+describe('render-relevance detection', () => {
+  it('skips docs-only changes but not CSS, config or mapped sources', () => {
+    const file = (path) => ({ path, status: 'M' });
+    expect(hasRenderRelevantChanges([file('README.md'), file('tests/x.test.js')])).toBe(false);
+    expect(hasRenderRelevantChanges([file('src/a.css')])).toBe(true);
+    expect(hasRenderRelevantChanges([file('visual.config.json')])).toBe(true);
+    expect(hasRenderRelevantChanges([file('docs/a.md')], { '/': ['docs/a.md'] })).toBe(true);
   });
 });
 
@@ -240,7 +310,7 @@ describe('visual-ci compare-branches (end to end)', () => {
           '<body><div class="hero" id="app">Hello</div></body></html>');
       }).listen(port, '127.0.0.1');
     `);
-    fs.writeFileSync(path.join(dir, 'styles.css'), '.hero { color: rgb(10, 10, 10); }\n');
+    fs.writeFileSync(path.join(dir, 'styles.css'), ORIGINAL_CSS);
     fs.writeFileSync(path.join(dir, 'visual.config.json'), JSON.stringify({
       baseUrl: 'http://127.0.0.1:1',
       routes: ['/'],
@@ -305,5 +375,37 @@ describe('visual-ci compare-branches (end to end)', () => {
     expect(result.status).toBe('failed');
     expect(result.exit_code).toBe(0);
     expect(result.counts.changed).toBe(1);
+  }, 120000);
+
+  it('records the repeat mismatch when stability checking is enabled', () => {
+    const run = runCli(dir, [
+      'compare-branches', '-c', 'visual.config.json', '-r', 'branch_stable',
+      '--stability-check', '--no-report', '--json', 'stable.json'
+    ]);
+    expect(run.status, run.stdout + '\n' + run.stderr).toBe(1);
+    const result = JSON.parse(fs.readFileSync(path.join(dir, 'stable.json'), 'utf8'));
+    expect(result.snapshots[0].repeat_mismatch_percentage).toBeGreaterThan(0);
+    expect(result.snapshots[0].noise_filtered).toBe(false);
+    const runDir = path.join(dir, 'storage', 'runs', 'branch_stable', 'branch-compare');
+    expect(fs.existsSync(path.join(runDir, 'base2', 'index-desktop.png'))).toBe(true);
+  }, 120000);
+
+  it('skips capture when only docs changed', () => {
+    // Revert the CSS so the head differs from base only by a docs file.
+    fs.writeFileSync(path.join(dir, 'styles.css'), ORIGINAL_CSS);
+    fs.writeFileSync(path.join(dir, 'CHANGELOG.md'), 'docs only\n');
+    git(dir, ['add', '.']);
+    git(dir, ['commit', '-q', '-m', 'docs only']);
+
+    const run = runCli(dir, [
+      'compare-branches', '-c', 'visual.config.json', '-r', 'branch_skip',
+      '--skip-no-render-changes', '--no-report', '--json', 'skip.json'
+    ]);
+    expect(run.status, run.stdout + '\n' + run.stderr).toBe(0);
+    const result = JSON.parse(fs.readFileSync(path.join(dir, 'skip.json'), 'utf8'));
+    expect(result.skipped).toBe(true);
+    expect(result.status).toBe('skipped');
+    expect(result.counts.changed).toBe(0);
+    expect(fs.existsSync(path.join(dir, 'storage', 'runs', 'branch_skip', 'branch-compare', 'base'))).toBe(false);
   }, 120000);
 });

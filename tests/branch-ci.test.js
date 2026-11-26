@@ -20,6 +20,11 @@ describe('sticky PR/MR comment', () => {
     expect(buildCommentBody(result, null)).toContain(BRANCH_MARKER);
   });
 
+  it('adds the artifact link when the workflow supplies one', () => {
+    const body = buildCommentBody(result, null, { VRT_ARTIFACT_URL: 'https://github.com/o/r/actions/runs/1/artifacts/2' });
+    expect(body).toContain('[Download the full comparison artifact](https://github.com/o/r/actions/runs/1/artifacts/2)');
+  });
+
   it('creates a GitHub comment and never includes the token in the request', async () => {
     const calls = [];
     const fetchImpl = async (url, options) => {
@@ -96,6 +101,8 @@ describe('CI workflow wiring', () => {
     expect(commands).toContain('upload-artifact');
     const comment = steps.find((s) => s.run?.includes('postComment.js'));
     expect(comment.if).toContain('head.repo.full_name == github.repository');
+    expect(comment.env.VRT_ARTIFACT_URL).toContain('artifact-url');
+    expect(steps.find((s) => s.uses?.includes('upload-artifact')).id).toBe('upload');
   });
 
   it('GitLab job runs only for MRs with the pinned image and a JUnit artifact', () => {

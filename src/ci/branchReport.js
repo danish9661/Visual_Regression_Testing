@@ -41,9 +41,11 @@ export function generateBranchReportMarkdown({ result, maxRows = 25, fileImpacts
   const changed = result.snapshots.filter((s) => s.status === 'DIFF' || s.status === 'MISSING_BASE');
   const ordered = [...changed, ...result.snapshots.filter((s) => !changed.includes(s))];
   const shown = ordered.slice(0, maxRows);
-  const verdict = changed.length === 0
-    ? '✅ **No visual differences** between the two branches.'
-    : `❌ **${changed.length} visual change${changed.length === 1 ? '' : 's'}** above the threshold.`;
+  const verdict = result.skipped
+    ? '⏭️ **Skipped** — no rendering-relevant files changed in this PR.'
+    : changed.length === 0
+      ? '✅ **No visual differences** between the two branches.'
+      : `❌ **${changed.length} visual change${changed.length === 1 ? '' : 's'}** above the threshold.`;
 
   const lines = [
     BRANCH_MARKER,
@@ -65,8 +67,9 @@ export function generateBranchReportMarkdown({ result, maxRows = 25, fileImpacts
 
   for (const snapshot of shown) {
     const status = snapshot.status === 'MATCH' ? '—' : snapshot.status === 'MISSING_BASE' ? 'new' : `${snapshot.mismatch_percentage}%`;
+    const noise = snapshot.noise_filtered ? ' ⚠️ unstable, filtered' : '';
     lines.push(
-      `| \`${escapeCell(snapshot.route)}\` | \`${escapeCell(snapshot.viewport)}\` | ${status} | ` +
+      `| \`${escapeCell(snapshot.route)}\` | \`${escapeCell(snapshot.viewport)}\` | ${status}${noise} | ` +
       `${suspectCell(snapshot)} | ${link('before', snapshot.base)} · ${link('after', snapshot.head)} · ${link('diff', snapshot.diff)} |`
     );
   }

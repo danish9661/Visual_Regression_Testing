@@ -244,6 +244,30 @@ export function validateBranchCompare(value) {
     throw new Error('Invalid configuration: "branchCompare.onRegression" must be "fail" or "warn".');
   }
 
+  const booleanValue = (v, name, fallback) => {
+    if (v === undefined || v === null) return fallback;
+    if (typeof v !== 'boolean') throw new Error(`Invalid configuration: "branchCompare.${name}" must be a boolean.`);
+    return v;
+  };
+  const stabilityCheck = booleanValue(value.stabilityCheck, 'stabilityCheck', false);
+  const skipWhenNoRenderChanges = booleanValue(value.skipWhenNoRenderChanges, 'skipWhenNoRenderChanges', false);
+  const keepTemp = booleanValue(value.keepTemp, 'keepTemp', false);
+
+  const routeThresholds = value.routeThresholds === undefined || value.routeThresholds === null ? {} : value.routeThresholds;
+  if (typeof routeThresholds !== 'object' || Array.isArray(routeThresholds)) {
+    throw new Error('Invalid configuration: "branchCompare.routeThresholds" must be an object.');
+  }
+  const normalizedRouteThresholds = {};
+  for (const [route, threshold] of Object.entries(routeThresholds)) {
+    if (typeof route !== 'string' || route.trim() === '') {
+      throw new Error('Invalid configuration: "branchCompare.routeThresholds" keys must be routes.');
+    }
+    if (typeof threshold !== 'number' || Number.isNaN(threshold) || threshold < 0 || threshold > 100) {
+      throw new Error(`Invalid configuration: "branchCompare.routeThresholds.${route}" must be a number between 0 and 100.`);
+    }
+    normalizedRouteThresholds[route.trim().startsWith('/') ? route.trim() : `/${route.trim()}`] = threshold;
+  }
+
   const report = value.report === undefined || value.report === null ? {} : value.report;
   if (typeof report !== 'object' || Array.isArray(report)) {
     throw new Error('Invalid configuration: "branchCompare.report" must be an object.');
@@ -266,6 +290,10 @@ export function validateBranchCompare(value) {
     ignoreRoutes: stringArray(value.ignoreRoutes, 'ignoreRoutes', []),
     maxMismatchPercent,
     onRegression,
+    stabilityCheck,
+    skipWhenNoRenderChanges,
+    keepTemp,
+    routeThresholds: normalizedRouteThresholds,
     report: {
       comment: report.comment !== false,
       maxRows: intValue(report.maxRows, 'report.maxRows', 25)

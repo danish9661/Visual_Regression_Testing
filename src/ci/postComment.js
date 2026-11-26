@@ -10,7 +10,7 @@ import { BRANCH_MARKER, generateBranchReportMarkdown } from './branchReport.js';
 
 export { BRANCH_MARKER };
 
-export function buildCommentBody(result, reportPath) {
+export function buildCommentBody(result, reportPath, env = process.env) {
   let report = null;
   if (reportPath) {
     try { report = fs.readFileSync(path.resolve(process.cwd(), reportPath), 'utf8'); } catch { /* regenerate */ }
@@ -18,6 +18,8 @@ export function buildCommentBody(result, reportPath) {
   if (!report || !report.includes(BRANCH_MARKER)) {
     report = generateBranchReportMarkdown({ result });
   }
+  const artifact = env.VRT_ARTIFACT_URL;
+  if (artifact) report = `${report}\n📦 [Download the full comparison artifact](${artifact})\n`;
   return report;
 }
 
@@ -55,7 +57,7 @@ export async function postComment({ result, platform, token, env = {}, fetchImpl
     if (!repo || !issue) return { action: 'skipped', reason: 'no repository or PR number' };
     const api = env.GITHUB_API_URL || 'https://api.github.com';
     const base = `${api}/repos/${repo}/issues/${issue}/comments`;
-    const body = buildCommentBody(result, result?.run?.report);
+    const body = buildCommentBody(result, result?.run?.report, env);
     const headers = apiHeaders(token, 'token'); // classic GitHub PATs use the "token" scheme
     const list = await readJson(await fetchImpl(`${base}?per_page=100`, { headers }));
     const existing = Array.isArray(list) && list.find((c) => typeof c.body === 'string' && c.body.includes(BRANCH_MARKER));
@@ -71,7 +73,7 @@ export async function postComment({ result, platform, token, env = {}, fetchImpl
     if (!project || !mr) return { action: 'skipped', reason: 'no project or MR iid' };
     const api = env.CI_API_V4_URL || 'https://gitlab.com/api/v4';
     const base = `${api}/projects/${encodeURIComponent(project)}/merge_requests/${mr}/notes`;
-    const body = buildCommentBody(result, result?.run?.report);
+    const body = buildCommentBody(result, result?.run?.report, env);
     const list = await readJson(await fetchImpl(`${base}?per_page=100`, { headers: apiHeaders(token) }));
     const existing = Array.isArray(list) && list.find((n) => typeof n.body === 'string' && n.body.includes(BRANCH_MARKER));
     const response = existing

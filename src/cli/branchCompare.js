@@ -29,14 +29,21 @@ export function compareBranchSnapshots({
   headSnapshots,
   diffDir,
   allowedThresholdRatio = 0.01,
-  pixelmatchThreshold = DEFAULT_PIXELMATCH_THRESHOLD
+  pixelmatchThreshold = DEFAULT_PIXELMATCH_THRESHOLD,
+  routeThresholds = {},
+  repeatBaseSnapshots = null,
+  repeatHeadSnapshots = null
 }) {
   fs.mkdirSync(diffDir, { recursive: true });
-  const baseByKey = new Map(baseSnapshots.map((snap) => [`${snap.route}\u0000${snap.viewport}`, snap]));
-  const allowedPercentage = allowedThresholdRatio * 100;
+  const key = (snap) => `${snap.route}\u0000${snap.viewport}`;
+  const baseByKey = new Map(baseSnapshots.map((snap) => [key(snap), snap]));
+  const repeatBaseByKey = new Map((repeatBaseSnapshots || []).map((snap) => [key(snap), snap]));
+  const repeatHeadByKey = new Map((repeatHeadSnapshots || []).map((snap) => [key(snap), snap]));
 
   return headSnapshots.map((head) => {
-    const base = baseByKey.get(`${head.route}\u0000${head.viewport}`);
+    // A route can override the global percentage (e.g. a chart that legitimately moves).
+    const thresholdPercent = routeThresholds[head.route] ?? allowedThresholdRatio * 100;
+    const base = baseByKey.get(key(head));
     const record = {
       route: head.route,
       viewport: head.viewport,
@@ -50,7 +57,10 @@ export function compareBranchSnapshots({
       width: head.width,
       height: head.height,
       status: 'MATCH',
-      dimensions: null
+      dimensions: null,
+      thresholdPercent,
+      noiseFiltered: false,
+      repeatMismatchPercentage: null
     };
 
     // A route added in the PR has no base render: report it explicitly, do not
@@ -67,15 +77,33 @@ export function compareBranchSnapshots({
     const diffPath = path.join(diffDir, `${path.parse(filename).name}-diff.png`);
     fs.writeFileSync(diffPath, comparison.diffBuffer);
 
-    return {
+    const recordWithDiff = {
       ...record,
       diffPath,
       mismatchedPixels: comparison.mismatchedPixels,
       totalPixels: comparison.totalPixels,
       mismatchPercentage: comparison.mismatchPercentage,
-      status: comparison.mismatchPercentage <= allowedPercentage ? 'MATCH' : 'DIFF',
+      status: comparison.mismatchPercentage <= thresholdPercent ? 'MATCH' : 'DIFF',
       dimensions: comparison.dimensions
     };
+
+    // Stability check: both independent captures must exceed the threshold before a
+    // snapshot is called a change. This filters out clocks, beacons and flaky effects.
+    if (repeatBaseByKey.size && repeatHeadByKey.size) {
+      const repeatBase = repeatBaseByKey.get(key(head));
+      const repeatHead = repeatHeadByKey.get(key(head));
+      if (repeatBase && repeatHead && fs.existsSync(repeatBase.filepath) && fs.existsSync(repeatHead.filepath)) {
+        const repeat = compareImages(fs.readFileSync(repeatBase.filepath), fs.readFileSync(repeatHead.filepath), {
+          threshold: pixelmatchThreshold
+        });
+        recordWithDiff.repeatMismatchPercentage = repeat.mismatchPercentage;
+        if (recordWithDiff.status === 'DIFF' && repeat.mismatchPercentage <= thresholdPercent) {
+          recordWithDiff.status = 'MATCH';
+          recordWithDiff.noiseFiltered = true;
+        }
+      }
+    }
+    return recordWithDiff;
   });
 }
 
@@ -100,13 +128,18 @@ export function buildBranchCompareResult({
   reportPath = null,
   createdAt = new Date(),
   durationMs = null,
-  error = null
+  error = null,
+  skipped = false
 }) {
   const snapshots = results.map((r) => ({
     route: r.route,
     viewport: r.viewport,
     status: r.status,
     mismatch_percentage: round6(r.mismatchPercentage),
+    threshold_percentage: round6(r.thresholdPercent ?? thresholdPercent),
+    noise_filtered: Boolean(r.noiseFiltered),
+    repeat_mismatch_percentage: r.repeatMismatchPercentage === null || r.repeatMismatchPercentage === undefined
+      ? null : round6(r.repeatMismatchPercentage),
     base: toDisplayPath(r.basePath),
     head: toDisplayPath(r.headPath),
     diff: toDisplayPath(r.diffPath),
@@ -122,10 +155,11 @@ export function buildBranchCompareResult({
     command: 'compare-branches',
     base: baseSha || baseRef ? { ref: baseRef ?? null, sha: baseSha ?? null, strategy: baseStrategy } : null,
     head: headSha || headRef ? { ref: headRef ?? null, sha: headSha ?? null } : null,
-    status: err ? 'error' : changed > 0 ? 'failed' : 'passed',
+    status: err ? 'error' : skipped ? 'skipped' : changed > 0 ? 'failed' : 'passed',
     exit_code: err ? 2 : exitCode,
     error: err ? { code: classifyError(err), message: sanitizeMessage(err.message) } : null,
     on_regression: onRegression,
+    skipped: Boolean(skipped),
     threshold_percentage: round6(thresholdPercent),
     run: {
       id: runId,

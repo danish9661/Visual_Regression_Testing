@@ -16,9 +16,9 @@ import { EXIT, STDOUT_TARGET, CliError, buildResult, writeResult, sanitizeMessag
 import { jsonTargetConflict, jsonTargetShapeProblem } from './jsonTarget.js';
 import { createLogger } from './logger.js';
 import { toDisplayPath } from './display.js';
-import { runBranchCapture, findRepoRoot } from './branchCapture.js';
+import { runBranchCapture, findRepoRoot, resolveBranchRefs } from './branchCapture.js';
 import { compareBranchSnapshots, buildBranchCompareResult, writeBranchCompareResult } from './branchCompare.js';
-import { gitChangedFiles, correlateChanges } from '../ci/codeCorrelation.js';
+import { gitChangedFiles, correlateChanges, hasRenderRelevantChanges } from '../ci/codeCorrelation.js';
 import { generateBranchReportMarkdown, generateJUnit, writeBranchReport } from '../ci/branchReport.js';
 
 /**
@@ -431,6 +431,9 @@ program
   .option('--base-strategy <strategy>', 'merge-base (default) or tip')
   .option('--max-mismatch <percent>', 'Mismatch percentage above which a snapshot is a change')
   .option('--on-regression <mode>', 'fail (exit 1 on changes) or warn (exit 0)')
+  .option('--stability-check', 'Capture each branch twice and only report a change if both diffs agree')
+  .option('--skip-no-render-changes', 'Skip the capture when no rendering-relevant files changed')
+  .option('--keep-temp', 'Keep the temporary worktrees for debugging')
   .option('--json <file>', 'Write the machine-readable result (schema visual-branch-compare v1); "-" writes it to stdout')
   .option('--no-report', 'Do not write the Markdown report or append to GITHUB_STEP_SUMMARY')
   .action(async (options) => {
@@ -489,39 +492,66 @@ program
       log.info('──────────────────────────────────────────────────────\n');
 
       const repoRoot = findRepoRoot();
-      const captured = await runBranchCapture({
-        config: effectiveConfig,
-        outputDir: runDir,
-        repoRoot,
-        options: { baseRef, baseStrategy },
-        log: log.info
-      });
+      const refs = resolveBranchRefs({ repoRoot, baseRef, headRef: 'HEAD', baseStrategy });
+      log.info(`  Base: ${baseRef} @ ${refs.baseSha.substring(0, 10)} (${baseStrategy})`);
+      log.info(`  Head: HEAD @ ${refs.headSha.substring(0, 10)}`);
 
-      log.info('\n  Comparing the two renders...');
-      const comparisons = compareBranchSnapshots({
-        baseSnapshots: captured.baseSnapshots,
-        headSnapshots: captured.headSnapshots,
-        diffDir,
-        allowedThresholdRatio: maxMismatchPercent / 100
-      });
-
-      log.info('  Linking visual changes to code changes...');
       let changedFiles = [];
       try {
-        changedFiles = gitChangedFiles({ repoRoot, baseSha: captured.baseSha, headSha: captured.headSha });
+        changedFiles = gitChangedFiles({ repoRoot, baseSha: refs.baseSha, headSha: refs.headSha });
       } catch (err) {
         log.warn(`  [WARN] Could not read the git diff: ${sanitizeMessage(String(err?.message ?? err))}`);
       }
-      const { results, fileImpacts } = correlateChanges({
-        results: comparisons,
-        changedFiles,
-        routeSources: bc.routeSources,
-        ignorePaths: bc.ignorePaths
-      });
+
+      const skip = (options.skipNoRenderChanges || bc.skipWhenNoRenderChanges) &&
+        !hasRenderRelevantChanges(changedFiles, bc.routeSources);
+      let captured = null;
+      let results = [];
+      let fileImpacts = [];
+
+      if (skip) {
+        log.info('\n  No rendering-relevant files changed; skipping both captures.');
+      } else {
+        captured = await runBranchCapture({
+          config: effectiveConfig,
+          outputDir: runDir,
+          repoRoot,
+          options: {
+            baseRef,
+            baseStrategy,
+            stabilityCheck: Boolean(options.stabilityCheck || bc.stabilityCheck),
+            keepTemp: Boolean(options.keepTemp || bc.keepTemp)
+          },
+          log: log.info
+        });
+
+        log.info('\n  Comparing the two renders...');
+        const comparisons = compareBranchSnapshots({
+          baseSnapshots: captured.baseSnapshots,
+          headSnapshots: captured.headSnapshots,
+          repeatBaseSnapshots: captured.baseRepeatSnapshots,
+          repeatHeadSnapshots: captured.headRepeatSnapshots,
+          routeThresholds: bc.routeThresholds,
+          diffDir,
+          allowedThresholdRatio: maxMismatchPercent / 100
+        });
+
+        log.info('  Linking visual changes to code changes...');
+        ({ results, fileImpacts } = correlateChanges({
+          results: comparisons,
+          changedFiles,
+          routeSources: bc.routeSources,
+          ignorePaths: bc.ignorePaths
+        }));
+        if (captured.tempDir) log.info(`  Kept temp worktrees: ${captured.tempDir}`);
+      }
+
+      const noiseFilteredCount = results.filter((r) => r.noiseFiltered).length;
+      if (noiseFilteredCount) log.info(`  Noise filter: ${noiseFilteredCount} unstable difference(s) ignored.`);
 
       let diffText = '';
       try {
-        diffText = execFileSync('git', ['diff', '--no-color', `${captured.baseSha}...${captured.headSha}`, '--'], {
+        diffText = execFileSync('git', ['diff', '--no-color', `${refs.baseSha}...${refs.headSha}`, '--'], {
           cwd: repoRoot, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024
         });
       } catch { /* the report still works without the raw diff */ }
@@ -530,10 +560,10 @@ program
       const exitCode = changedCount > 0 && policy === 'fail' ? EXIT.DIFF : EXIT.PASS;
       const result = buildBranchCompareResult({
         runId,
-        baseSha: captured.baseSha,
-        headSha: captured.headSha,
-        baseRef: captured.baseRef,
-        headRef: captured.headRef,
+        baseSha: refs.baseSha,
+        headSha: refs.headSha,
+        baseRef: refs.baseRef,
+        headRef: refs.headRef,
         baseStrategy,
         thresholdPercent: maxMismatchPercent,
         onRegression: policy,
@@ -541,7 +571,8 @@ program
         results,
         runDir,
         reportPath: options.report === false ? null : reportFile,
-        durationMs: Date.now() - startTime
+        durationMs: Date.now() - startTime,
+        skipped: skip
       });
 
       if (options.report !== false) {
@@ -564,7 +595,9 @@ program
       log.info(`  Execution Time   : ${((Date.now() - startTime) / 1000).toFixed(2)}s`);
       if (resultFile !== STDOUT_TARGET) log.info(`  JSON Result      : ${toDisplayPath(resultFile)}`);
       log.info('──────────────────────────────────────────────────────\n');
-      if (changedCount > 0 && policy === 'warn') {
+      if (skip) {
+        log.info('[SUCCESS] No rendering-relevant changes; visual check skipped.\n');
+      } else if (changedCount > 0 && policy === 'warn') {
         log.info(`[SUCCESS] ${changedCount} visual change(s) found (warn-only policy).\n`);
       } else if (changedCount === 0) {
         log.info('[SUCCESS] No visual differences between the two branches.\n');

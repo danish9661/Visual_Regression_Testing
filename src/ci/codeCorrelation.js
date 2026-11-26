@@ -77,6 +77,30 @@ export function gitChangedFiles({ repoRoot, baseSha, headSha }) {
 const CSS_EXT = new Set(['.css', '.scss', '.sass', '.less', '.styl']);
 const TEMPLATE_EXT = new Set(['.html', '.ejs', '.hbs', '.mustache', '.jsx', '.tsx', '.vue', '.svelte', '.js', '.ts', '.mjs', '.cjs']);
 
+/** File types whose changes can actually change a rendered page. */
+export const RENDER_EXTENSIONS = new Set([
+  ...CSS_EXT, ...TEMPLATE_EXT,
+  '.json', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.avif',
+  '.woff', '.woff2', '.ttf', '.otf', '.eot', '.ico'
+]);
+
+/**
+ * True when at least one changed file could affect rendering. Used to skip an
+ * expensive two-branch capture for docs/test-only PRs.
+ */
+export function hasRenderRelevantChanges(changedFiles = [], routeSources = {}) {
+  const configured = Object.values(routeSources).flat();
+  return changedFiles.some((file) => {
+    // Test and docs files never change a rendered page, even when they are .js/.ts.
+    if (/(^|\/)(tests?|__tests__)(\/|$)|\.(test|spec)\.[cm]?[jt]sx?$/i.test(file.path)) return false;
+    if (matchesAnyGlob(file.path, configured)) return true;
+    const base = file.path.split(/[\\/]/).pop() || '';
+    if (base === 'visual.config.json' || base === 'package.json') return true;
+    const dot = base.lastIndexOf('.');
+    return dot !== -1 && RENDER_EXTENSIONS.has(base.slice(dot).toLowerCase());
+  });
+}
+
 /** Extracts DOM-matching tokens and example lines from the added diff lines. */
 export function extractSignals(file) {
   const ext = pathExt(file.path);

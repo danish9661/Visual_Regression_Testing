@@ -709,6 +709,9 @@ Add a `branchCompare` block to `visual.config.json` (all fields optional):
   "startTimeoutMs": 60000,
   "routeSources": { "/": ["scripts/demo-app.js"] },
   "ignorePaths": ["**/*.md", "**/tests/**"],
+  "stabilityCheck": false,
+  "skipWhenNoRenderChanges": true,
+  "routeThresholds": { "/chart": 2 },
   "onRegression": "fail",
   "report": { "comment": true, "maxRows": 25 }
 }
@@ -725,10 +728,14 @@ Add a `branchCompare` block to `visual.config.json` (all fields optional):
 | `routeSources` | Optional route → file globs; these files are always considered likely sources for that route. |
 | `ignorePaths` | Globs never reported as suspects. |
 | `maxMismatchPercent` | Overrides `threshold` for this check (percent). |
+| `stabilityCheck` | Capture each branch twice and only report a change if both diffs exceed the threshold. Filters clocks, beacons and other flaky content. CLI: `--stability-check`. |
+| `skipWhenNoRenderChanges` | Skip both captures when the PR changes only docs/tests and no rendering-relevant files. CLI: `--skip-no-render-changes`. |
+| `routeThresholds` | Per-route mismatch percentages (e.g. `{ "/chart": 2 }`) that override `maxMismatchPercent` for that route. |
+| `keepTemp` | Keep the temporary worktrees for debugging. CLI: `--keep-temp`. |
 | `onRegression` | `fail` (exit 1 on changes) or `warn` (exit 0, report still written). Overridable with `--on-regression` or `VRT_ON_REGRESSION`. |
 | `report.comment` | Whether the CI step should post the sticky PR/MR comment. |
 
-Exit codes follow the rest of the tool: **0** no visual changes (or warn mode), **1** visual changes, **2** git/capture/config error. `--json <file>` (or `--json -`) writes a `visual-branch-compare` v1 result with base/head SHAs, per-snapshot mismatch percentages and ranked suspects. The run folder holds `base/`, `head/`, `diffs/`, `report.md` and `junit.xml`.
+Exit codes follow the rest of the tool: **0** no visual changes (or warn mode), **1** visual changes, **2** git/capture/config error. `--json <file>` (or `--json -`) writes a `visual-branch-compare` v1 result with base/head SHAs, per-snapshot mismatch/threshold percentages and ranked suspects. Snapshots carry `noise_filtered` and `repeat_mismatch_percentage` when stability checking is on; a skipped run has `status: "skipped"`. The run folder holds `base/`, `head/`, `diffs/`, `report.md` and `junit.xml` (with `base2/`/`head2/` when stability checking). The GitHub workflow passes the uploaded artifact URL to the sticky comment via `VRT_ARTIFACT_URL`.
 
 **How code correlation works (and its limits):** the tool reads `git diff base...head`, extracts CSS selectors, ids and `data-*` tokens from changed lines, and compares them with DOM tokens collected from each page during capture. It also uses `routeSources` globs and path/route name matches. Every suspect is labelled with a reason and a confidence (`high`/`medium`/`low`) — these are **heuristic hints, not proof of cause**. When nothing matches, the report says so instead of guessing.
 
@@ -763,7 +770,7 @@ The project includes pre-configured automation for GitHub Actions (`.github/work
 The project includes unit, integration, and deliverable verification suites:
 
 ```bash
-# Run all 769 Vitest unit, integration & browser tests
+# Run all 776 Vitest unit, integration & browser tests
 npm test
 
 # Run Phase 1 Deliverable Verification (Capture & Masking)
@@ -822,12 +829,12 @@ node tests/simulate-pr.js
  ✓ tests/reporter.test.js (12 tests)
  ✓ tests/a11y-axe.test.js (14 tests)
  ✓ tests/keyboard-ui.test.js (20 tests)
- ✓ tests/branch-compare.test.js (13 tests)
- ✓ tests/branch-ci.test.js (8 tests)
+ ✓ tests/branch-compare.test.js (19 tests)
+ ✓ tests/branch-ci.test.js (9 tests)
  ✓ tests/branch-comment-http.test.js (2 tests)
 
  Test Files  35 passed (35)
-      Tests  769 passed (769)
+      Tests  776 passed (776)
 ```
 
 ---

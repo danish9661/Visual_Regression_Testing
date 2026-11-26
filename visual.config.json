@@ -32,6 +32,9 @@
     "portHead": 4101,
     "startTimeoutMs": 60000,
     "routeSources": { "/": ["scripts/demo-app.js"] },
+    "stabilityCheck": false, // capture twice and ignore differences that do not repeat
+    "skipWhenNoRenderChanges": true, // skip the check for docs/test-only PRs
+    "routeThresholds": {}, // e.g. { "/chart": 2 } overrides the global threshold for one route
     "onRegression": "fail",
     "report": { "comment": true, "maxRows": 25 }
   }

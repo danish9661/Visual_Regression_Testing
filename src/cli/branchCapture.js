@@ -203,6 +203,8 @@ export function configForPort(config, port) {
 /** High-level orchestration: refs -> worktrees -> two running apps -> two captures. */
 export async function runBranchCapture({ config, outputDir, repoRoot, options = {}, log = () => {} }) {
   const opts = config.branchCompare || {};
+  const stabilityCheck = options.stabilityCheck ?? opts.stabilityCheck;
+  const keepTemp = options.keepTemp ?? opts.keepTemp;
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vrt-branch-'));
   let worktrees = null;
   const running = [];
@@ -241,23 +243,33 @@ export async function runBranchCapture({ config, outputDir, repoRoot, options = 
       log(`  ${branch.label} app ready at ${redactUrl(server.url)}`);
 
       const branchConfig = configForPort(config, branch.port);
-      captured[branch.label] = await captureScreenshots(branchConfig, {
-        runId: branch.runId,
+      const capture = (runId, suffix) => captureScreenshots(branchConfig, {
+        runId,
         outputDir,
         collectDomTokens: true,
-        onProgress: (snap) => log(`    [${branch.label}] ${snap.route} @ ${snap.viewport}`)
+        onProgress: (snap) => log(`    [${branch.label}${suffix}] ${snap.route} @ ${snap.viewport}`)
       });
+      captured[branch.label] = await capture(branch.runId, '');
+      if (stabilityCheck) {
+        captured[`${branch.label}Repeat`] = await capture(`${branch.runId}2`, ' (repeat)');
+      }
     }
 
+    if (keepTemp) log(`  Kept temporary worktrees at ${tempRoot} (run \`git worktree prune\` to forget them).`);
     return {
       ...refs,
       baseSnapshots: captured.base,
-      headSnapshots: captured.head
+      headSnapshots: captured.head,
+      baseRepeatSnapshots: captured.baseRepeat || null,
+      headRepeatSnapshots: captured.headRepeat || null,
+      tempDir: keepTemp ? tempRoot : null
     };
   } finally {
     for (const server of running.reverse()) server.stop();
-    if (worktrees) worktrees.cleanup();
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    if (!keepTemp) {
+      if (worktrees) worktrees.cleanup();
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
   }
 }
 
