@@ -75,6 +75,28 @@ export function generateBranchReportMarkdown({ result, maxRows = 25, fileImpacts
   }
   if (ordered.length > shown.length) lines.push('', `_Showing ${shown.length} of ${ordered.length} snapshots; full data is in the artifact._`);
 
+  // Inline hunks put the actual +/- lines next to each visual change, without
+  // forcing the reader to open the artifact or scroll the full diff.
+  const withDiffs = changed.filter((snapshot) => snapshot.suspects?.length);
+  if (withDiffs.length) {
+    lines.push('', '### Likely code changes (with diff hunks)', '');
+    for (const snapshot of withDiffs.slice(0, Math.min(8, maxRows))) {
+      lines.push(`#### \`${escapeCell(snapshot.route)}\` @ \`${escapeCell(snapshot.viewport)}\` — ${snapshot.mismatch_percentage}%`, '');
+      for (const suspect of snapshot.suspects.slice(0, 3)) {
+        const where = suspect.line ? `${suspect.path}:${suspect.line}` : suspect.path;
+        lines.push(`**${escapeCell(where)}** (${escapeCell(suspect.confidence)}) — ${escapeCell(suspect.reason)}`, '');
+        if (suspect.diff?.length) {
+          lines.push('```diff');
+          for (const hunk of suspect.diff) {
+            lines.push(`@@ -${hunk.start},0 +${hunk.start},0 @@`);
+            for (const codeLine of hunk.lines) lines.push(codeLine);
+          }
+          lines.push('```', '');
+        }
+      }
+    }
+  }
+
   if (fileImpacts.length) {
     lines.push('', '### Changed files that may explain a visual change', '');
     for (const file of fileImpacts.slice(0, 20)) {

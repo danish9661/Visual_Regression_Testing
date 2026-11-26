@@ -758,7 +758,7 @@ Add a `branchCompare` block to `visual.config.json` (all fields optional):
 
 Exit codes follow the rest of the tool: **0** no visual changes (or warn mode), **1** visual changes, **2** git/capture/config error. `--json <file>` (or `--json -`) writes a `visual-branch-compare` v1 result with base/head SHAs, per-snapshot mismatch/threshold percentages and ranked suspects. Snapshots carry `noise_filtered` and `repeat_mismatch_percentage` when stability checking is on; a skipped run has `status: "skipped"`. The run folder holds `base/`, `head/`, `diffs/`, `report.md` and `junit.xml` (with `base2/`/`head2/` when stability checking). The GitHub workflow passes the uploaded artifact URL to the sticky comment via `VRT_ARTIFACT_URL`.
 
-**How code correlation works (and its limits):** the tool reads `git diff base...head`, extracts CSS selectors, ids and `data-*` tokens from changed lines, and compares them with DOM tokens collected from each page during capture. It also uses `routeSources` globs and path/route name matches. Every suspect is labelled with a reason and a confidence (`high`/`medium`/`low`) — these are **heuristic hints, not proof of cause**. When nothing matches, the report says so instead of guessing.
+**How code correlation works (and its limits):** the tool reads `git diff base...head` and extracts signals from **all** changed file types — CSS selectors, custom properties, `@keyframes` and computed colour/value pairs; HTML/template classes, ids, `data-*` attributes and visible text; JS/TS state-machine actions, string literals, identifiers, imported modules and user-visible strings; JSON/YAML config keys and values; and asset file names. Those are matched against DOM tokens captured from each page: classes, ids, `data-*` and ARIA state, visible text, computed styles and CSS custom properties. `routeSources` globs, path/route matches and the module import graph add further evidence. Every suspect carries a reason, confidence (`high`/`medium`/`low`) and the **actual +/- diff hunks**, and the report also includes the full collapsed git diff. These are **heuristic hints, not proof of cause** — when nothing matches, the report says so instead of guessing.
 
 **CI setup:**
 
@@ -791,7 +791,7 @@ The project includes pre-configured automation for GitHub Actions (`.github/work
 The project includes unit, integration, and deliverable verification suites:
 
 ```bash
-# Run all 781 Vitest unit, integration & browser tests
+# Run all 784 Vitest unit, integration & browser tests
 npm test
 
 # Run Phase 1 Deliverable Verification (Capture & Masking)
@@ -850,13 +850,13 @@ node tests/simulate-pr.js
  ✓ tests/reporter.test.js (12 tests)
  ✓ tests/a11y-axe.test.js (14 tests)
  ✓ tests/keyboard-ui.test.js (20 tests)
- ✓ tests/branch-compare.test.js (19 tests)
+ ✓ tests/branch-compare.test.js (22 tests)
  ✓ tests/branch-ci.test.js (9 tests)
  ✓ tests/branch-comment-http.test.js (2 tests)
  ✓ tests/capture-hooks.test.js (2 tests)
 
  Test Files  36 passed (36)
-      Tests  781 passed (781)
+      Tests  784 passed (784)
 ```
 
 ---

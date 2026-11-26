@@ -130,23 +130,54 @@ async function assertValidMaskSelectors(page, maskSelectors = []) {
  * @param {number} [max=4000]
  * @returns {Promise<string[]>}
  */
-export async function collectDomTokens(page, max = 4000) {
+export async function collectDomTokens(page, max = 6000) {
   try {
     return await page.evaluate((limit) => {
       const tokens = new Set();
+      const add = (token) => { if (token && tokens.size < limit) tokens.add(token); };
+      const compactColor = (value) => String(value || '').replace(/\s+/g, '').toLowerCase();
+      const rootStyles = getComputedStyle(document.documentElement);
+      let customProps = 0;
+      for (let i = 0; i < rootStyles.length && customProps < 80; i++) {
+        const prop = rootStyles[i];
+        if (prop.startsWith('--')) {
+          add(`var:${prop}=${compactColor(rootStyles.getPropertyValue(prop))}`);
+          customProps++;
+        }
+      }
+
       const elements = document.querySelectorAll('*');
       for (let i = 0; i < elements.length && tokens.size < limit; i++) {
         const el = elements[i];
         const className = typeof el.className === 'string' ? el.className : el.className?.baseVal;
-        if (className) {
-          for (const part of String(className).split(/\s+/)) {
-            if (part && tokens.size < limit) tokens.add(`.${part}`);
+        if (className) for (const part of String(className).split(/\s+/)) add(`.${part}`);
+        if (el.id) add(`#${el.id}`);
+        for (const attr of el.attributes) {
+          if (attr.name.startsWith('data-')) {
+            add(`[${attr.name}="${attr.value}"]`);
+            add(`state:${attr.value}`);
+            add(`id:${attr.value}`);
+          } else if (/^aria-(expanded|selected|current|checked|pressed|hidden|disabled)$/.test(attr.name)) {
+            add(`state:${attr.value}`);
+            add(`id:${attr.value}`);
           }
         }
-        if (el.id && tokens.size < limit) tokens.add(`#${el.id}`);
-        for (const attr of ['data-testid', 'data-test-id', 'data-vrt-source']) {
-          const value = el.getAttribute(attr);
-          if (value && tokens.size < limit) tokens.add(`[${attr}="${value}"]`);
+        if (el.disabled) add('state:disabled');
+        if (el.hidden) add('state:hidden');
+        if (el.value !== undefined && typeof el.value === 'string' && el.value.length < 120) add(`state:${el.value}`);
+        // Visible text of small leaf elements (not the whole page body) helps match
+        // state-machine output such as "Checkout" -> "Payment failed".
+        if (el.children.length === 0) {
+          const text = (el.textContent || '').trim().replace(/\s+/g, ' ');
+          if (text && text.length < 120) add(`text:${text}`);
+        }
+        if (i % 7 === 0) {
+          const style = getComputedStyle(el);
+          add(`css:color=${compactColor(style.color)}`);
+          add(`css:background-color=${compactColor(style.backgroundColor)}`);
+          add(`css:font-size=${compactColor(style.fontSize)}`);
+          add(`css:display=${compactColor(style.display)}`);
+          if (style.transform && style.transform !== 'none') add(`css:transform=${compactColor(style.transform)}`);
         }
       }
       return [...tokens];

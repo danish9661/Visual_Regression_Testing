@@ -75,12 +75,34 @@ export function gitChangedFiles({ repoRoot, baseSha, headSha }) {
 }
 
 const CSS_EXT = new Set(['.css', '.scss', '.sass', '.less', '.styl']);
-const TEMPLATE_EXT = new Set(['.html', '.ejs', '.hbs', '.mustache', '.jsx', '.tsx', '.vue', '.svelte', '.js', '.ts', '.mjs', '.cjs']);
+const JS_EXT = new Set(['.js', '.ts', '.mjs', '.cjs', '.jsx', '.tsx']);
+const TEMPLATE_EXT = new Set(['.html', '.htm', '.ejs', '.hbs', '.mustache', '.jsx', '.tsx', '.vue', '.svelte', '.js', '.ts', '.mjs', '.cjs']);
+const CONFIG_EXT = new Set(['.json', '.yaml', '.yml', '.toml']);
+const STOPWORDS = new Set([
+  'const', 'function', 'return', 'if', 'else', 'true', 'false', 'null', 'undefined',
+  'new', 'await', 'async', 'import', 'export', 'from', 'class', 'extends', 'this',
+  'let', 'var', 'for', 'while', 'switch', 'case', 'break', 'default', 'throw',
+  'try', 'catch', 'finally', 'typeof', 'instanceof', 'string', 'number', 'boolean',
+  'object', 'array', 'promise', 'void', 'yield', 'interface', 'type', 'returns'
+]);
+
+function compactColor(value) {
+  const text = String(value ?? '').trim().toLowerCase().replace(/\s+/g, '');
+  const hex = text.match(/^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/);
+  if (!hex) return text;
+  let digits = hex[1];
+  if (digits.length === 3) digits = digits.split('').map((c) => c + c).join('');
+  const r = parseInt(digits.slice(0, 2), 16);
+  const g = parseInt(digits.slice(2, 4), 16);
+  const b = parseInt(digits.slice(4, 6), 16);
+  return `rgb(${r},${g},${b})`;
+}
 
 /** File types whose changes can actually change a rendered page. */
 export const RENDER_EXTENSIONS = new Set([
   ...CSS_EXT, ...TEMPLATE_EXT,
-  '.json', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.avif',
+  '.json', '.yaml', '.yml', '.toml',
+  '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.avif',
   '.woff', '.woff2', '.ttf', '.otf', '.eot', '.ico'
 ]);
 
@@ -105,30 +127,87 @@ export function hasRenderRelevantChanges(changedFiles = [], routeSources = {}) {
 export function extractSignals(file) {
   const ext = pathExt(file.path);
   const tokens = new Map(); // token -> first line where it was seen
-  const add = (token, line) => { if (token && !tokens.has(token)) tokens.set(token, line); };
+  const add = (token, line) => {
+    if (token && !tokens.has(token) && tokens.size < 600) tokens.set(token, line);
+  };
 
   for (const hunk of file.hunks) {
     for (const entry of hunk.lines) {
       const text = entry.text;
+      const line = entry.line;
+
       if (CSS_EXT.has(ext)) {
-        for (const match of text.matchAll(/\.(-?[_a-zA-Z][\w-]*)/g)) add(`.${match[1]}`, entry.line);
-        for (const match of text.matchAll(/#(-?[_a-zA-Z][\w-]*)/g)) add(`#${match[1]}`, entry.line);
-        for (const match of text.matchAll(/\[data-([\w-]+)/g)) add(`[data-${match[1]}]`, entry.line);
+        for (const match of text.matchAll(/\.(-?[_a-zA-Z][\w-]*)/g)) add(`.${match[1]}`, line);
+        for (const match of text.matchAll(/#(-?[_a-zA-Z][\w-]*)/g)) add(`#${match[1]}`, line);
+        for (const match of text.matchAll(/\[data-([\w-]+)/g)) add(`[data-${match[1]}]`, line);
+        for (const match of text.matchAll(/--([\w-]+)\s*:\s*([^;}]+)/g)) {
+          add(`var:--${match[1]}=${compactColor(match[2])}`, line);
+          add(`id:${match[1]}`, line);
+        }
+        for (const match of text.matchAll(/@keyframes\s+([\w-]+)/g)) add(`keyframes:${match[1]}`, line);
+        for (const match of text.matchAll(/(color|background|background-color|border-color|font-size|font-family|display|transform|opacity|width|height|margin|padding|gap)\s*:\s*([^;}]+)/gi)) {
+          const property = match[1].toLowerCase();
+          const value = compactColor(match[2]);
+          add(`css:${property}=${value}`, line);
+          add(`prop:${property}=${value}`, line);
+        }
       }
+
       if (TEMPLATE_EXT.has(ext) || CSS_EXT.has(ext)) {
-        for (const match of text.matchAll(/(?:class(?:Name)?|id|data-testid|data-test-id|data-vrt-source)\s*=\s*["'`]([^"'`]+)["'`]/g)) {
+        for (const match of text.matchAll(/>([^<>{}]{3,120})</g)) add(`text:${match[1].trim()}`, line);
+        for (const match of text.matchAll(/(?:class(?:Name)?|id|data-testid|data-test-id|data-vrt-source|data-state)\s*=\s*["'`]([^"'`]+)["'`]/g)) {
           for (const cls of match[1].split(/\s+/)) {
             if (!cls) continue;
             const attr = match[0].slice(0, match[0].indexOf('=')).trim();
-            if (attr === 'id') add(`#${cls}`, entry.line);
-            else if (attr.startsWith('data-')) add(`[${attr}="${cls}"]`, entry.line);
-            else add(`.${cls}`, entry.line);
+            if (attr === 'id') add(`#${cls}`, line);
+            else if (attr.startsWith('data-')) {
+              add(`[${attr}="${cls}"]`, line);
+              add(`state:${cls}`, line);
+              add(`id:${cls}`, line);
+            } else add(`.${cls}`, line);
           }
+        }
+      }
+
+      if (JS_EXT.has(ext)) {
+        // State-machine names, action strings and user-visible text all end up in
+        // the DOM, so they are the strongest signal for logic that changes a page.
+        for (const match of text.matchAll(/['"`]([^'"`\n]{4,120})['"`]/g)) {
+          const value = match[1];
+          add(`str:${value}`, line);
+          add(`text:${value}`, line);
+          add(`id:${value}`, line);
+          add(`state:${value}`, line);
+        }
+        for (const match of text.matchAll(/[A-Za-z_$][\w$]{3,}/g)) {
+          const word = match[0];
+          if (STOPWORDS.has(word.toLowerCase())) continue;
+          add(`id:${word}`, line);
+          add(`state:${word}`, line);
+        }
+        for (const match of text.matchAll(/(?:from\s+|import\s*\(?\s*)['"]([^'"]+)['"]/g)) {
+          add(`import:${match[1]}`, line);
+          add(`file:${pathExtName(match[1])}`, line);
+        }
+      }
+
+      if (CONFIG_EXT.has(ext)) {
+        for (const match of text.matchAll(/["']([A-Za-z][\w-]{2,})["']\s*:/g)) add(`cfg:${match[1]}`, line);
+        for (const match of text.matchAll(/:\s*["']([^"']{3,80})["']/g)) {
+          add(`str:${match[1]}`, line);
+          add(`id:${match[1]}`, line);
         }
       }
     }
   }
+  add(`file:${pathExtName(file.path)}`, file.hunks[0]?.lines[0]?.line ?? null);
   return tokens;
+}
+
+function pathExtName(file) {
+  const base = file.split(/[\\/]/).pop() || '';
+  const dot = base.lastIndexOf('.');
+  return (dot === -1 ? base : base.slice(0, dot)).toLowerCase();
 }
 
 function pathExt(file) {
@@ -156,6 +235,17 @@ function reasonFor(scoreParts, matched) {
  */
 export function correlateChanges({ results, changedFiles, routeSources = {}, ignorePaths = [], maxPerSnapshot = 5 }) {
   const fileImpacts = new Map();
+  // Module graph: which files import a changed module. A state helper imported by a
+  // route's page is often the real cause even when it contains no class names.
+  const importers = new Map();
+  for (const file of changedFiles) {
+    for (const token of extractSignals(file).keys()) {
+      if (!token.startsWith('import:')) continue;
+      const name = pathExtName(token.slice(7));
+      if (!importers.has(name)) importers.set(name, new Set());
+      importers.get(name).add(file.path);
+    }
+  }
 
   for (const result of results) {
     if (result.status !== 'DIFF' && result.status !== 'MISSING_BASE') {
@@ -184,23 +274,43 @@ export function correlateChanges({ results, changedFiles, routeSources = {}, ign
         scoreParts.push(`path matches route "${result.route}"`);
       }
       if (matched.length) {
-        score += Math.min(30, matched.length * 10);
+        score += Math.min(40, matched.length * 12);
         for (const token of matched) {
           const seen = signals.get(token);
           if (seen !== null && seen !== undefined && (line === null || seen < line)) line = seen;
         }
       }
+      const stateMatches = matched.filter((t) => /^(id|state|str|text|cfg):/.test(t));
+      if (stateMatches.length) {
+        score += Math.min(15, stateMatches.length * 5);
+        scoreParts.push('state/action string appears on this page');
+      }
+      const styleMatches = matched.filter((t) => /^(css|prop|var|keyframes):/.test(t));
+      if (styleMatches.length) {
+        score += Math.min(15, styleMatches.length * 5);
+        scoreParts.push('computed style or custom property matches');
+      }
+      const usedByRoute = [...(importers.get(pathExtName(file.path)) || [])]
+        .some((importerPath) => matchesAnyGlob(importerPath, routePatterns));
+      if (usedByRoute) {
+        score += 15;
+        scoreParts.push('imported by a changed route source');
+      }
 
       if (score < 10) continue;
-      const confidence = score >= 40 ? 'high' : score >= 20 ? 'medium' : 'low';
+      const confidence = score >= 50 ? 'high' : score >= 25 ? 'medium' : 'low';
       suspects.push({
         path: toDisplayPath(file.path),
         line,
         reason: reasonFor(scoreParts, matched),
-        evidence: matched.length ? `tokens: ${matched.slice(0, 5).join(', ')}` : 'route/path mapping',
+        evidence: matched.length ? `tokens: ${matched.slice(0, 6).join(', ')}` : 'route/path or import mapping',
         confidence,
         score,
-        change: file.status
+        change: file.status,
+        diff: file.hunks.filter((hunk) => hunk.lines.length).slice(0, 3).map((hunk) => ({
+          start: hunk.start,
+          lines: hunk.lines.slice(0, 10).map((entry) => entry.text)
+        }))
       });
       const impact = fileImpacts.get(file.path) || { path: toDisplayPath(file.path), snapshots: [], score: 0 };
       impact.snapshots.push(`${result.route} @ ${result.viewport}`);

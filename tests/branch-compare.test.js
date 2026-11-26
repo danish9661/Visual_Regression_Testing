@@ -220,6 +220,39 @@ describe('code correlation heuristics', () => {
     expect(tokens.get('.hero')).toBe(7);
   });
 
+  it('extracts JS state-machine actions and visible text', () => {
+    const tokens = extractSignals({
+      path: 'src/state/checkout.js',
+      hunks: [{
+        start: 12,
+        lines: [
+          { line: 12, text: "dispatch({ type: 'CHECKOUT_FAILED' });" },
+          { line: 13, text: '<div className="error-banner">Payment failed</div>' }
+        ]
+      }]
+    });
+    const keys = [...tokens.keys()];
+    expect(keys).toContain('id:CHECKOUT_FAILED');
+    expect(keys).toContain('state:CHECKOUT_FAILED');
+    expect(keys).toContain('.error-banner');
+    expect(keys).toContain('text:Payment failed');
+  });
+
+  it('normalises CSS colours and custom properties for matching computed styles', () => {
+    const tokens = extractSignals({
+      path: 'theme.css',
+      hunks: [{
+        start: 1,
+        lines: [
+          { line: 1, text: '--primary: #ff0000;' },
+          { line: 2, text: '.btn { color: #fff; }' }
+        ]
+      }]
+    });
+    expect(tokens.get('var:--primary=rgb(255,0,0)')).toBe(1);
+    expect(tokens.has('css:color=rgb(255,255,255)')).toBe(true);
+  });
+
   it('ranks changed files by selector overlap and route mapping', () => {
     const results = [{
       route: '/', viewport: 'desktop', status: 'DIFF', mismatchPercentage: 5,
@@ -239,6 +272,7 @@ describe('code correlation heuristics', () => {
     expect(out[0].suspects[0].path).toBe('styles.css');
     expect(out[0].suspects[0].line).toBe(3);
     expect(out[0].suspects[0].evidence).toContain('.hero');
+    expect(out[0].suspects[0].diff[0].lines[0]).toContain('.hero { color: blue; }');
     expect(out[0].suspects.some((s) => s.path === 'README.md')).toBe(false);
     expect(out[1].suspects).toEqual([]);
     expect(fileImpacts[0].snapshots).toEqual(['/ @ desktop']);
@@ -259,16 +293,26 @@ describe('branch comparison report', () => {
     results: [{
       route: '/', viewport: 'desktop', status: 'DIFF', mismatchPercentage: 3.42,
       basePath: 'runs/base.png', headPath: 'runs/head.png', diffPath: 'runs/diff.png',
-      suspects: [{ path: 'src/styles.css', line: 12, reason: 'changed .hero appears on this page', confidence: 'high', score: 70 }]
+      suspects: [{
+        path: 'src/styles.css', line: 12, reason: 'changed .hero appears on this page', confidence: 'high', score: 70,
+        diff: [{ start: 12, lines: ['- .hero { color: black; }', '+ .hero { color: blue; }'] }]
+      }]
     }]
   });
 
   it('produces a sticky Markdown report linking visuals and code', () => {
-    const md = generateBranchReportMarkdown({ result, fileImpacts: [{ path: 'src/styles.css', snapshots: ['/ @ desktop'], score: 70 }] });
+    const md = generateBranchReportMarkdown({
+      result,
+      fileImpacts: [{ path: 'src/styles.css', snapshots: ['/ @ desktop'], score: 70 }],
+      diffText: 'diff --git a/src/styles.css b/src/styles.css\n+ .hero { color: blue; }'
+    });
     expect(md.startsWith(BRANCH_MARKER)).toBe(true);
     expect(md).toContain('3.42%');
     expect(md).toContain('src/styles.css:12');
     expect(md).toContain('[before](<runs/base.png>)');
+    expect(md).toContain('```diff');
+    expect(md).toContain('+ .hero { color: blue; }');
+    expect(md).toContain('<details><summary>Full git diff');
     expect(md).toContain('heuristic matches');
   });
 
@@ -414,5 +458,37 @@ describe('visual-ci compare-branches (end to end)', () => {
     expect(result.status).toBe('skipped');
     expect(result.counts.changed).toBe(0);
     expect(fs.existsSync(path.join(dir, 'storage', 'runs', 'branch_skip', 'branch-compare', 'base'))).toBe(false);
+  }, 120000);
+
+  it('links a JS state-machine change to the visual change', () => {
+    fs.writeFileSync(path.join(dir, 'styles.css'), ORIGINAL_CSS);
+    fs.writeFileSync(path.join(dir, 'app.js'), `
+      const http = require('node:http');
+      const port = Number(process.env.PORT || process.env.DEMO_PORT || 3000);
+      http.createServer((req, res) => {
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end('<!doctype html><html><body><div id="app"></div><script>' +
+          'const d = document.getElementById("app");' +
+          'd.className = "state-error"; d.dataset.state = "failed";' +
+          'd.textContent = "Payment failed";' +
+          '</script></body></html>');
+      }).listen(port, '127.0.0.1');
+    `);
+    git(dir, ['add', '.']);
+    git(dir, ['commit', '-q', '-m', 'PR: flip checkout state machine']);
+
+    const run = runCli(dir, [
+      'compare-branches', '-c', 'visual.config.json', '-r', 'branch_state', '--json', 'state.json'
+    ]);
+    expect(run.status, run.stdout + '\n' + run.stderr).toBe(1);
+    const result = JSON.parse(fs.readFileSync(path.join(dir, 'state.json'), 'utf8'));
+    expect(result.counts.changed).toBe(1);
+    const suspect = result.snapshots[0].suspects.find((s) => s.path === 'app.js');
+    expect(suspect).toBeTruthy();
+    expect(suspect.evidence).toMatch(/state:failed|text:Payment failed/);
+    expect(suspect.diff[0].lines.join('\n')).toContain('Payment failed');
+    const report = fs.readFileSync(path.join(dir, 'storage', 'runs', 'branch_state', 'branch-compare', 'report.md'), 'utf8');
+    expect(report).toContain('```diff');
+    expect(report).toContain('Payment failed');
   }, 120000);
 });
