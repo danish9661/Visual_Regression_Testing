@@ -28,7 +28,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       RUN_ID: gh-${{ github.event.pull_request.number || github.run_id }}-${{ github.run_attempt }}
-      TEMP_DIR: ${{ runner.temp }}/visual-branch
       ON_REGRESSION: ${{ github.event.inputs.on_regression || 'fail' }}
     steps:
       - name: Checkout with full history
@@ -52,6 +51,8 @@ jobs:
       - name: Compare base and head renders
         id: compare
         continue-on-error: true
+        env:
+          TEMP_DIR: ${{ runner.temp }}/visual-branch
         run: |
           mkdir -p "$TEMP_DIR"
           docker run --rm --network host --user "$(id -u):$(id -g)" \
@@ -82,6 +83,7 @@ jobs:
         if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         continue-on-error: true
         env:
+          TEMP_DIR: ${{ runner.temp }}/visual-branch
           VRT_PLATFORM: github
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}

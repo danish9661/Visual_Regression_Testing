@@ -92,6 +92,9 @@ describe('CI workflow wiring', () => {
     expect(workflow.permissions.contents).toBe('read');
     // `inputs.*` is only valid on workflow_dispatch; this workflow also runs on push.
     expect(ghText).not.toMatch(/\$\{\{\s*inputs\./);
+    // The runner context is only valid in steps (job-level env fails validation).
+    expect(Object.values(workflow.jobs.compare.env).join(' ')).not.toContain('runner.');
+    expect(workflow.jobs.compare.steps.find((s) => s.id === 'compare').env.TEMP_DIR).toContain('runner.temp');
   });
 
   it('GitHub workflow builds the image, runs the comparison and posts a comment', () => {
