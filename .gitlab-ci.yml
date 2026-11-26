@@ -1,0 +1,47 @@
+# Render the MR's base commit and the MR head with the same pinned Playwright image,
+# diff the visuals, link changes to code, and report back as a sticky MR note.
+#
+# Requires a masked CI variable GL_TOKEN (project access token with `api` scope) for
+# the comment. Without it the note is skipped; the artifacts and JUnit report remain.
+
+stages:
+  - visual
+
+visual-branch-compare:
+  stage: visual
+  image: mcr.microsoft.com/playwright:v1.64.1-noble
+  variables:
+    GIT_DEPTH: "0"
+    RUN_ID: mr-${CI_MERGE_REQUEST_IID}-${CI_PIPELINE_IID}
+    TEMP_DIR: ${CI_PROJECT_DIR}/.visual-branch-compare
+    ON_REGRESSION: "fail"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  script:
+    - npm ci
+    - mkdir -p "$TEMP_DIR"
+    - set +e
+    - >
+      node src/cli/index.js compare-branches
+      -c visual.config.json
+      -r "$RUN_ID"
+      --base-ref "${CI_MERGE_REQUEST_DIFF_BASE_SHA}"
+      --on-regression "$ON_REGRESSION"
+      --json "$TEMP_DIR/result.json"
+    - EXIT=$?
+    - set -e
+    - |
+      if [ -n "$GL_TOKEN" ] && [ -f "$TEMP_DIR/result.json" ]; then
+        VRT_PLATFORM=gitlab GL_TOKEN="$GL_TOKEN" \
+          CI_PROJECT_ID="$CI_PROJECT_ID" CI_MERGE_REQUEST_IID="$CI_MERGE_REQUEST_IID" \
+          node src/ci/postComment.js "$TEMP_DIR/result.json" || true
+      fi
+    - exit $EXIT
+  artifacts:
+    when: always
+    expire_in: 7 days
+    paths:
+      - $TEMP_DIR/result.json
+      - storage/runs/$RUN_ID/branch-compare/
+    reports:
+      junit: storage/runs/$RUN_ID/branch-compare/junit.xml

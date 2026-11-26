@@ -20,5 +20,22 @@
     ".dynamic-ad",
     "img.avatar"
   ],
-  "threshold": 0.01 // filter that how much error is acceptable and after what % is it a faliure
+  "threshold": 0.01, // filter that how much error is acceptable and after what % is it a faliure
+  // Settings for `visual-ci compare-branches` (PR/MR: render base and head, then diff them).
+  "branchCompare": {
+    "baseRef": "origin/main",
+    "baseStrategy": "merge-base",
+    "installCommand": "", // node_modules are already installed by CI; empty means reuse them
+    "startCommand": "npm run demo:serve",
+    "waitOnPath": "/",
+    "portBase": 4100,
+    "portHead": 4101,
+    "startTimeoutMs": 60000,
+    "routeSources": { "/": ["scripts/demo-app.js"] },
+    "stabilityCheck": false, // capture twice and ignore differences that do not repeat
+    "skipWhenNoRenderChanges": true, // skip the check for docs/test-only PRs
+    "routeThresholds": {}, // e.g. { "/chart": 2 } overrides the global threshold for one route
+    "onRegression": "fail",
+    "report": { "comment": true, "maxRows": 25 }
+  }
 }
