@@ -215,6 +215,9 @@ export function validateBranchCompare(value) {
   }
 
   const startTimeoutMs = intValue(value.startTimeoutMs, 'startTimeoutMs', 60000);
+  const settleMs = intValue(value.settleMs, 'settleMs', 200, { min: 0, max: 60000 });
+  const waitForSelector = value.waitForSelector === undefined || value.waitForSelector === null
+    ? null : stringValue(value.waitForSelector, 'waitForSelector', '');
 
   const routeSources = value.routeSources === undefined || value.routeSources === null ? {} : value.routeSources;
   if (typeof routeSources !== 'object' || Array.isArray(routeSources)) {
@@ -252,6 +255,7 @@ export function validateBranchCompare(value) {
   const stabilityCheck = booleanValue(value.stabilityCheck, 'stabilityCheck', false);
   const skipWhenNoRenderChanges = booleanValue(value.skipWhenNoRenderChanges, 'skipWhenNoRenderChanges', false);
   const keepTemp = booleanValue(value.keepTemp, 'keepTemp', false);
+  const scrollToBottom = booleanValue(value.scrollToBottom, 'scrollToBottom', false);
 
   const routeThresholds = value.routeThresholds === undefined || value.routeThresholds === null ? {} : value.routeThresholds;
   if (typeof routeThresholds !== 'object' || Array.isArray(routeThresholds)) {
@@ -285,6 +289,9 @@ export function validateBranchCompare(value) {
     portBase,
     portHead,
     startTimeoutMs,
+    settleMs,
+    waitForSelector,
+    scrollToBottom,
     routeSources: normalizedRouteSources,
     ignorePaths: stringArray(value.ignorePaths, 'ignorePaths', []),
     ignoreRoutes: stringArray(value.ignoreRoutes, 'ignoreRoutes', []),

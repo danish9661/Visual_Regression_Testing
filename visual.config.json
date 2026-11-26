@@ -31,6 +31,9 @@
     "portBase": 4100,
     "portHead": 4101,
     "startTimeoutMs": 60000,
+    "settleMs": 200, // extra pause before each screenshot (raise for slow SPAs)
+    "waitForSelector": null, // e.g. ".app-ready" to wait for real content
+    "scrollToBottom": false, // scroll once first to trigger lazy-loaded images
     "routeSources": { "/": ["scripts/demo-app.js"] },
     "stabilityCheck": false, // capture twice and ignore differences that do not repeat
     "skipWhenNoRenderChanges": true, // skip the check for docs/test-only PRs

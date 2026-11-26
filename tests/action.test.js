@@ -352,7 +352,7 @@ describe('action-selftest.yml proves the failure paths on a real runner', () => 
         paths: ['action.yml', 'src/ci/**', 'src/cli/**', 'Dockerfile', '.dockerignore', '.github/workflows/action-selftest.yml']
       }
     });
-    expect(selftest.permissions).toEqual({ contents: 'read' });
+    expect(selftest.permissions).toEqual({ contents: 'read', actions: 'read' });
     expect(Object.keys(selftest.jobs).sort()).toEqual(['diff', 'error']);
     for (const job of Object.values(selftest.jobs)) {
       expect(job.permissions).toBeUndefined();

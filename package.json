@@ -7,6 +7,17 @@
   "bin": {
     "visual-ci": "./src/cli/index.js"
   },
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "src/",
+    "scripts/",
+    "visual.config.json",
+    "Dockerfile",
+    ".dockerignore",
+    "README.md"
+  ],
   "scripts": {
     "start": "node src/server/app.js",
     "server": "node src/server/app.js",
@@ -19,7 +30,8 @@
     "docker:dashboard": "docker compose up dashboard",
     "docker:test": "docker compose run --rm runner",
     "docker:update-baselines": "docker compose run --rm runner node src/cli/index.js test --update-baselines",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepublishOnly": "npm test"
   },
   "keywords": [
     "visual-regression",

@@ -247,6 +247,9 @@ export async function runBranchCapture({ config, outputDir, repoRoot, options = 
         runId,
         outputDir,
         collectDomTokens: true,
+        settleMs: opts.settleMs,
+        waitForSelector: opts.waitForSelector || undefined,
+        scrollToBottom: opts.scrollToBottom,
         onProgress: (snap) => log(`    [${branch.label}${suffix}] ${snap.route} @ ${snap.viewport}`)
       });
       captured[branch.label] = await capture(branch.runId, '');

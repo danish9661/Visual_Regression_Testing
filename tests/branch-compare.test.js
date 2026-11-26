@@ -60,16 +60,23 @@ describe('branchCompare configuration', () => {
     expect(bc.stabilityCheck).toBe(false);
     expect(bc.skipWhenNoRenderChanges).toBe(false);
     expect(bc.routeThresholds).toEqual({});
+    expect(bc.settleMs).toBe(200);
+    expect(bc.waitForSelector).toBeNull();
+    expect(bc.scrollToBottom).toBe(false);
   });
 
   it('validates the new improvement settings', () => {
     const bc = validateBranchCompare({
       stabilityCheck: true, skipWhenNoRenderChanges: true,
-      routeThresholds: { '/pricing': 2, about: 0.5 }
+      routeThresholds: { '/pricing': 2, about: 0.5 },
+      settleMs: 500, waitForSelector: '.app-ready', scrollToBottom: true
     });
     expect(bc.stabilityCheck).toBe(true);
     expect(bc.skipWhenNoRenderChanges).toBe(true);
     expect(bc.routeThresholds).toEqual({ '/pricing': 2, '/about': 0.5 });
+    expect(bc.settleMs).toBe(500);
+    expect(bc.waitForSelector).toBe('.app-ready');
+    expect(bc.scrollToBottom).toBe(true);
     expect(() => validateBranchCompare({ routeThresholds: { '/': 101 } })).toThrow(/between 0 and 100/);
     expect(() => validateBranchCompare({ stabilityCheck: 'yes' })).toThrow(/boolean/);
   });

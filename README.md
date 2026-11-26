@@ -71,7 +71,8 @@ Visual Regression Testing Project/
 │       ├── visual-ci.yml          # GitHub Actions visual regression pipeline
 │       ├── action-selftest.yml    # Proves the action's failure paths on a real runner (diff artifact imports; error uploads nothing)
 │       ├── pages.yml              # Builds the static demo and deploys it to GitHub Pages
-│       └── visual-branch-compare.yml # PR check: render main + PR, diff, comment and upload artifacts
+│       ├── visual-branch-compare.yml # PR check: render main + PR, diff, comment and upload artifacts
+│       └── npm-publish.yml       # Publishes the npm package on a v* tag
 ├── .gitlab-ci.yml                 # The same branch comparison for GitLab merge requests
 ├── docs/                          # Detailed engineering milestone records
 │   ├── PHASE_1_EXECUTION.md       # Foundation & Playwright Capture Engine
@@ -186,6 +187,7 @@ Visual Regression Testing Project/
     ├── branch-compare.test.js     # Config, diffing, correlation, report and end-to-end two-branch run
     ├── branch-ci.test.js          # Sticky comment posting + GitHub/GitLab workflow wiring
     ├── branch-comment-http.test.js# Comment posting against a real local HTTP API
+    ├── capture-hooks.test.js      # waitForSelector / scrollToBottom for SPA pages
     ├── simulate-pr.js             # Standalone full PR simulation (temp repo + fake APIs)
     └── verify-phase-6.js          # Phase 6 deliverable verification script
 ```
@@ -212,6 +214,19 @@ npm install
 # Install Playwright Chromium binary and system dependencies
 npx playwright install chromium
 ```
+
+### Install from npm
+
+The CLI is also published as an npm package (once a `v*` tag is pushed). It is an alternative to the GitHub Action for local use and non-GitHub CI:
+
+```bash
+npm install --save-dev visual-regression-tool
+npx playwright install chromium
+npx visual-ci test
+npx visual-ci compare-branches --json result.json
+```
+
+The package contains the CLI, dashboard templates, demo app and the pinned `Dockerfile`. For pixel-identical baselines across machines, still generate them inside the Docker image (`npm run docker:update-baselines` or `docker build .`). The GitHub Action remains the recommended way to get PR comments and artifacts automatically.
 
 ---
 
@@ -707,6 +722,9 @@ Add a `branchCompare` block to `visual.config.json` (all fields optional):
   "portBase": 4100,
   "portHead": 4101,
   "startTimeoutMs": 60000,
+  "settleMs": 200,
+  "waitForSelector": null,
+  "scrollToBottom": false,
   "routeSources": { "/": ["scripts/demo-app.js"] },
   "ignorePaths": ["**/*.md", "**/tests/**"],
   "stabilityCheck": false,
@@ -731,6 +749,9 @@ Add a `branchCompare` block to `visual.config.json` (all fields optional):
 | `stabilityCheck` | Capture each branch twice and only report a change if both diffs exceed the threshold. Filters clocks, beacons and other flaky content. CLI: `--stability-check`. |
 | `skipWhenNoRenderChanges` | Skip both captures when the PR changes only docs/tests and no rendering-relevant files. CLI: `--skip-no-render-changes`. |
 | `routeThresholds` | Per-route mismatch percentages (e.g. `{ "/chart": 2 }`) that override `maxMismatchPercent` for that route. |
+| `settleMs` | Extra pause before each screenshot (default 200). Raise it for slow SPA rendering. |
+| `waitForSelector` | Wait for this element to be visible before capturing — useful when the real content appears after `load`. |
+| `scrollToBottom` | Scroll through the page first (then back to top) to trigger lazy-loaded images and intersection observers. |
 | `keepTemp` | Keep the temporary worktrees for debugging. CLI: `--keep-temp`. |
 | `onRegression` | `fail` (exit 1 on changes) or `warn` (exit 0, report still written). Overridable with `--on-regression` or `VRT_ON_REGRESSION`. |
 | `report.comment` | Whether the CI step should post the sticky PR/MR comment. |
@@ -770,7 +791,7 @@ The project includes pre-configured automation for GitHub Actions (`.github/work
 The project includes unit, integration, and deliverable verification suites:
 
 ```bash
-# Run all 776 Vitest unit, integration & browser tests
+# Run all 781 Vitest unit, integration & browser tests
 npm test
 
 # Run Phase 1 Deliverable Verification (Capture & Masking)
@@ -832,9 +853,10 @@ node tests/simulate-pr.js
  ✓ tests/branch-compare.test.js (19 tests)
  ✓ tests/branch-ci.test.js (9 tests)
  ✓ tests/branch-comment-http.test.js (2 tests)
+ ✓ tests/capture-hooks.test.js (2 tests)
 
- Test Files  35 passed (35)
-      Tests  776 passed (776)
+ Test Files  36 passed (36)
+      Tests  781 passed (781)
 ```
 
 ---

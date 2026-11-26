@@ -110,6 +110,30 @@ describe('CI workflow wiring', () => {
     expect(steps.find((s) => s.uses?.includes('upload-artifact')).id).toBe('upload');
   });
 
+  it('action self-test can download its artifact by name', () => {
+    const workflow = YAML.parse(fs.readFileSync('.github/workflows/action-selftest.yml', 'utf8'));
+    expect(workflow.permissions.actions).toBe('read');
+  });
+
+  it('Pages workflow reports a disabled Pages site clearly', () => {
+    const workflow = YAML.parse(fs.readFileSync('.github/workflows/pages.yml', 'utf8'));
+    const check = workflow.jobs.deploy.steps.find((s) => s.name?.includes('GitHub Pages is enabled'));
+    expect(check).toBeTruthy();
+    expect(check.with.script).toContain('Settings → Pages');
+  });
+
+  it('package is publishable to npm with a guarded release workflow', () => {
+    const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+    expect(pkg.engines.node).toContain('22');
+    expect(pkg.files).toContain('src/');
+    expect(pkg.files).toContain('Dockerfile');
+    expect(pkg.scripts.prepublishOnly).toBe('npm test');
+    const workflow = YAML.parse(fs.readFileSync('.github/workflows/npm-publish.yml', 'utf8'));
+    expect(workflow.on.push.tags).toContain('v*');
+    expect(workflow.permissions['id-token']).toBe('write');
+    expect(workflow.jobs.publish.steps.at(-1).env.NODE_AUTH_TOKEN).toContain('NPM_TOKEN');
+  });
+
   it('GitLab job runs only for MRs with the pinned image and a JUnit artifact', () => {
     const config = YAML.parse(glText);
     const job = config['visual-branch-compare'];

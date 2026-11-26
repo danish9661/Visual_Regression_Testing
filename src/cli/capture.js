@@ -166,6 +166,9 @@ export async function collectDomTokens(page, max = 4000) {
  * @param {Function} [options.onProgress] - Callback invoked after each screenshot
  * @param {number} [options.navigationTimeout=30000] - Max ms for the page's load event (failing this aborts the capture)
  * @param {number} [options.networkIdleTimeout=10000] - Max ms to additionally wait for network idle (best effort)
+ * @param {number} [options.settleMs=200] - Extra pause before the screenshot (for SPA rendering)
+ * @param {string} [options.waitForSelector] - Wait for this element (visible) before capturing
+ * @param {boolean} [options.scrollToBottom=false] - Scroll through the page first to trigger lazy loading
  * @param {boolean} [options.collectDomTokens=false] - Also record DOM tokens per snapshot (for code correlation)
  * @returns {Promise<Array<object>>} Array of captured snapshot results
  */
@@ -174,6 +177,7 @@ export async function captureScreenshots(config, options = {}) {
   assertValidRunId(runId);
   const navigationTimeout = options.navigationTimeout ?? 30000;
   const networkIdleTimeout = options.networkIdleTimeout ?? 10000;
+  const settleMs = options.settleMs ?? 200;
   const baseStorage = options.outputDir || path.resolve(process.cwd(), config.storageDir || 'storage', 'runs');
   const targetDir = path.resolve(baseStorage, runId);
 
@@ -227,11 +231,36 @@ export async function captureScreenshots(config, options = {}) {
             masksChecked = true;
           }
 
+          // Scrolling through the page triggers lazy-loaded images and intersection
+          // observers; return to the top so the full-page screenshot starts at 0.
+          if (options.scrollToBottom) {
+            await page.evaluate(async () => {
+              const step = Math.max(200, window.innerHeight || 600);
+              const height = document.body.scrollHeight || document.documentElement.scrollHeight;
+              for (let y = 0; y < height; y += step) {
+                window.scrollTo(0, y);
+                await new Promise((resolve) => setTimeout(resolve, 50));
+              }
+              window.scrollTo(0, 0);
+            });
+            await page.waitForTimeout(100); // let intersection observers fire
+          }
+
+          // SPAs often render their real content after the load event. An explicit
+          // selector lets the caller wait for it instead of screenshotting a skeleton.
+          if (options.waitForSelector) {
+            try {
+              await page.waitForSelector(options.waitForSelector, { state: 'visible', timeout: navigationTimeout });
+            } catch (err) {
+              throw new CliError('NAVIGATION_FAILED', `Timed out waiting for "${options.waitForSelector}" on ${redactUrl(fullUrl)}: ${firstLine(err)}`, { cause: err });
+            }
+          }
+
           // Inject deterministic styles to freeze animations and hide the caret
           await page.addStyleTag({ content: deterministicCss });
 
           // Brief pause to allow any synchronous style recalculation
-          await page.waitForTimeout(200);
+          await page.waitForTimeout(settleMs);
 
           const tokens = options.collectDomTokens ? await collectDomTokens(page) : undefined;
 

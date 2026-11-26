@@ -25,6 +25,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read # required by actions/download-artifact@v7 to list artifacts by name
 
 jobs:
   diff:
